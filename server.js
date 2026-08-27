@@ -1,86 +1,320 @@
 require("dotenv").config();
 
 const express = require("express");
-const app = express();
 
+const app = express();
 app.use(express.json());
 
 const PORT = process.env.PORT || 3000;
+const VERIFY_TOKEN = process.env.VERIFY_TOKEN;
+const WHATSAPP_TOKEN = process.env.WHATSAPP_TOKEN;
+const PHONE_NUMBER_ID = process.env.PHONE_NUMBER_ID;
 
+// Temporary data.
+// We will replace this with a real database later.
+const players = new Map();
+
+const sessions = {
+  "court 1": { available: true },
+  "court 2": { available: true },
+  "court 3": { available: false },
+  "court 4": { available: true }
+};
+
+// HOME / HEALTH CHECK
 app.get("/", (req, res) => {
-  res.send("🏸 Badminton Bot is running!");
+  res.status(200).send("🏸 Badminton Bot is running!");
 });
 
-// Meta webhook verification
+// META WEBHOOK VERIFICATION
 app.get("/webhook", (req, res) => {
   const mode = req.query["hub.mode"];
   const token = req.query["hub.verify_token"];
   const challenge = req.query["hub.challenge"];
 
-  if (mode === "subscribe" && token === process.env.VERIFY_TOKEN) {
+  if (mode === "subscribe" && token === VERIFY_TOKEN) {
     console.log("✅ Webhook verified");
-    res.status(200).send(challenge);
-  } else {
-    res.sendStatus(403);
+    return res.status(200).send(challenge);
   }
+
+  console.log("❌ Webhook verification failed");
+  return res.sendStatus(403);
 });
 
-// Receive WhatsApp messages
+// RECEIVE WHATSAPP MESSAGES
 app.post("/webhook", async (req, res) => {
-  console.log("📩 WhatsApp message received");
-
-  const message =
-    req.body.entry?.[0]?.changes?.[0]?.value?.messages?.[0];
-
-  if (!message) {
-    return res.sendStatus(200);
-  }
-
-  const from = message.from;
-
-  console.log("Message from:", from);
-  console.log("Message:", message.text?.body);
-
-  // First automatic reply
-  await sendWhatsAppMessage(
-    from,
-    "🏸 Welcome to Badminton Club!\n\n" +
-    "What would you like to do?\n\n" +
-    "1️⃣ Book a space\n" +
-    "2️⃣ Check availability\n" +
-    "3️⃣ Make a payment\n" +
-    "4️⃣ My account"
-  );
-
+  // Tell Meta we received the message
   res.sendStatus(200);
+
+  try {
+    const value = req.body?.entry?.[0]?.changes?.[0]?.value;
+    const message = value?.messages?.[0];
+
+    if (!message) return;
+
+    const from = message.from;
+    const text = message?.text?.body?.trim() || "";
+
+    if (!text) return;
+
+    console.log(`📩 Message from ${from}: ${text}`);
+
+    const reply = handleMessage(from, text);
+
+    if (reply) {
+      await sendWhatsAppMessage(from, reply);
+    }
+
+  } catch (error) {
+    console.error("❌ Webhook error:", error);
+  }
 });
 
-// Send message through WhatsApp
-async function sendWhatsAppMessage(to, text) {
-  const response = await fetch(
-    `https://graph.facebook.com/v23.0/${process.env.PHONE_NUMBER_ID}/messages`,
-    {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${process.env.WHATSAPP_TOKEN}`,
-        "Content-Type": "application/json"
-      },
-      body: JSON.stringify({
-        messaging_product: "whatsapp",
-        to: to,
-        type: "text",
-        text: {
-          body: text
-        }
-      })
+// BOT LOGIC
+function handleMessage(phone, text) {
+
+  const command = text.toLowerCase();
+
+  // MENU
+  if (
+    command === "hi" ||
+    command === "hello" ||
+    command === "menu"
+  ) {
+    return (
+      "🏸 *Badminton Bot*\n\n" +
+      "What would you like to do?\n\n" +
+      "1️⃣ Check spaces\n" +
+      "2️⃣ Book a space\n" +
+      "3️⃣ Payment\n" +
+      "4️⃣ Rankings\n" +
+      "5️⃣ My details\n\n" +
+      "Reply with the option or word."
+    );
+  }
+
+  // SPACES
+  if (
+    command === "1" ||
+    command === "spaces" ||
+    command === "space"
+  ) {
+    return getSpaces();
+  }
+
+  // BOOKING
+  if (
+    command === "2" ||
+    command === "book" ||
+    command === "booking"
+  ) {
+    return (
+      "🏸 *Book a space*\n\n" +
+      "Available spaces are:\n\n" +
+      getAvailableSpaceNames() +
+      "\n\nReply with the court you want, e.g. *Court 1*."
+    );
+  }
+
+  // PAYMENT
+  if (
+    command === "3" ||
+    command === "payment" ||
+    command === "pay"
+  ) {
+    const player = players.get(phone);
+
+    if (player?.paid) {
+      return "💷 Your payment status is *PAID* ✅";
     }
+
+    return (
+      "💷 Your payment status is currently *NOT PAID* ❌\n\n" +
+      "The payment link will be connected here."
+    );
+  }
+
+  // RANKINGS
+  if (
+    command === "4" ||
+    command === "ranking" ||
+    command === "rankings"
+  ) {
+    return getRanking();
+  }
+
+  // DETAILS
+  if (
+    command === "5" ||
+    command === "my details" ||
+    command === "details"
+  ) {
+    const player = players.get(phone);
+
+    if (!player) {
+      return (
+        "👤 I don't have your details yet.\n\n" +
+        "Please send me your name."
+      );
+    }
+
+    return (
+      "👤 *Your details*\n\n" +
+      `Name: ${player.name}\n` +
+      `Points: ${player.points}\n` +
+      `Payment: ${player.paid ? "Paid ✅" : "Not paid ❌"}`
+    );
+  }
+
+  // COURT SELECTION
+  if (command.includes("court")) {
+
+    const court = command;
+
+    if (!sessions[court]) {
+      return (
+        "❌ I couldn't find that court.\n\n" +
+        "Please choose an available court."
+      );
+    }
+
+    if (!sessions[court].available) {
+      return `❌ ${court} is currently unavailable.`;
+    }
+
+    return (
+      `🏸 ${court} is available.\n\n` +
+      "Your booking system will confirm the booking here once we connect the database and payment system."
+    );
+  }
+
+  // SAVE PLAYER NAME
+  if (/^[a-zA-ZÀ-ÿ' -]{2,50}$/.test(text)) {
+
+    players.set(phone, {
+      name: text,
+      points: players.get(phone)?.points || 0,
+      paid: players.get(phone)?.paid || false
+    });
+
+    return (
+      `Thanks, ${text}! 👋\n\n` +
+      "I've saved your player details.\n\n" +
+      "Reply *menu* to see what I can do."
+    );
+  }
+
+  // UNKNOWN MESSAGE
+  return (
+    "🏸 I didn't understand that.\n\n" +
+    "Reply *menu* to see what I can do."
   );
+}
+
+// AVAILABLE SPACES
+function getSpaces() {
+
+  const available = Object.entries(sessions)
+    .filter(([, session]) => session.available)
+    .map(([name]) => name);
+
+  if (available.length === 0) {
+    return "🏸 There are currently no spaces available.";
+  }
+
+  return (
+    "🏸 *Available spaces*\n\n" +
+    available.map(name => `✅ ${name}`).join("\n")
+  );
+}
+
+function getAvailableSpaceNames() {
+
+  const available = Object.entries(sessions)
+    .filter(([, session]) => session.available)
+    .map(([name]) => `✅ ${name}`);
+
+  return available.length
+    ? available.join("\n")
+    : "❌ No spaces currently available.";
+}
+
+// RANKINGS
+function getRanking() {
+
+  const ranked = [...players.values()]
+    .sort((a, b) => b.points - a.points)
+    .slice(0, 10);
+
+  if (ranked.length === 0) {
+    return "🏆 No players have been added to the ranking yet.";
+  }
+
+  return (
+    "🏆 *Player Rankings*\n\n" +
+    ranked
+      .map(
+        (player, index) =>
+          `${index + 1}. ${player.name} — ${player.points} pts`
+      )
+      .join("\n")
+  );
+}
+
+// SEND WHATSAPP MESSAGE
+async function sendWhatsAppMessage(to, message) {
+
+  if (!WHATSAPP_TOKEN || !PHONE_NUMBER_ID) {
+
+    console.log("⚠️ WhatsApp credentials are not configured.");
+    console.log("Message would have been:", message);
+
+    return;
+  }
+
+  const url =
+    `https://graph.facebook.com/v23.0/${PHONE_NUMBER_ID}/messages`;
+
+  const response = await fetch(url, {
+
+    method: "POST",
+
+    headers: {
+      "Authorization": `Bearer ${WHATSAPP_TOKEN}`,
+      "Content-Type": "application/json"
+    },
+
+    body: JSON.stringify({
+
+      messaging_product: "whatsapp",
+
+      to: to,
+
+      type: "text",
+
+      text: {
+        body: message
+      }
+
+    })
+
+  });
 
   const data = await response.json();
 
-  console.log("WhatsApp API response:", data);
+  if (!response.ok) {
+    console.error("❌ WhatsApp API error:", data);
+    return;
+  }
+
+  console.log("✅ WhatsApp message sent");
 }
 
+// START SERVER
 app.listen(PORT, "0.0.0.0", () => {
-  console.log(`🏸 Badminton Bot running on port ${PORT}`);
+
+  console.log(
+    `🏸 Badminton Bot running on port ${PORT}`
+  );
+
 });
