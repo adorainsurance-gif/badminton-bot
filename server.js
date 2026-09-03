@@ -154,20 +154,20 @@ if (
     "Reply *YES* to continue or *NO* to go back to the menu."
   );
 }
-
-  // BOOKING
-  if (
-    command === "2" ||
-    command === "book" ||
-    command === "booking"
-  ) {
-    return (
-      "🏸 *Book a space*\n\n" +
-      "Available spaces are:\n\n" +
-      getAvailableSpaceNames() +
-      "\n\nReply with the court you want, e.g. *Court 1*."
-    );
-  }
+// CHECK AVAILABILITY
+if (
+  command === "2" ||
+  command === "spaces" ||
+  command === "space"
+) {
+  return (
+    "🏸 *Check Availability*\n\n" +
+    "📅 Thursday\n" +
+    "🕖 7:00 PM - 9:00 PM\n\n" +
+    "👨 Men's spaces: 12 available\n" +
+    "👩 Women's spaces: 12 available"
+  );
+}
 
   // PAYMENT
   if (
