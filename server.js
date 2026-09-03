@@ -131,23 +131,29 @@ function handleMessage(phone, text) {
     return (
       "🏸 *Badminton Bot*\n\n" +
       "What would you like to do?\n\n" +
-      "1️⃣ Check spaces\n" +
-      "2️⃣ Book a space\n" +
-      "3️⃣ Payment\n" +
-      "4️⃣ Rankings\n" +
-      "5️⃣ My details\n\n" +
+      "1️⃣ Book a space\n" +
+      "2️⃣ Check Availability \n" +
+      "3️⃣ My Booking\n" +
+      "4️⃣ Help\n" +
       "Reply with the option or word."
     );
   }
 
-  // SPACES
-  if (
-    command === "1" ||
-    command === "spaces" ||
-    command === "space"
-  ) {
-    return getSpaces();
-  }
+ // BOOK A SPACE
+if (
+  command === "1" ||
+  command === "book" ||
+  command === "booking"
+) {
+  return (
+    "🏸 *Book a Space*\n\n" +
+    "The next badminton session is:\n\n" +
+    "📅 Thursday\n" +
+    "🕖 7:00 PM - 9:00 PM\n\n" +
+    "Would you like to book a space for this session?\n\n" +
+    "Reply *YES* to continue or *NO* to go back to the menu."
+  );
+}
 
   // BOOKING
   if (
