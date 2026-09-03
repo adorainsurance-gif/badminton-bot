@@ -3,7 +3,54 @@ require("dotenv").config();
 const express = require("express");
 
 const app = express();
-app.use(express.json());
+app.use(express.json());app.get("/privacy-policy", (req, res) => {
+  res.send(`
+    <!DOCTYPE html>
+    <html>
+    <head>
+      <title>Privacy Policy - Badminton Bot</title>
+      <meta name="viewport" content="width=device-width, initial-scale=1">
+      <style>
+        body {
+          font-family: Arial, sans-serif;
+          max-width: 800px;
+          margin: 40px auto;
+          padding: 20px;
+          line-height: 1.6;
+          color: #222;
+        }
+        h1, h2 { color: #111; }
+      </style>
+    </head>
+    <body>
+      <h1>Privacy Policy</h1>
+
+      <p><strong>Badminton Bot</strong> is a WhatsApp-based service designed to help users organise and manage badminton activities.</p>
+
+      <h2>Information We Collect</h2>
+      <p>When you use Badminton Bot, we may process information that you voluntarily provide, including your WhatsApp phone number, name, messages and information relating to your badminton activities.</p>
+
+      <h2>How We Use Your Information</h2>
+      <p>We use this information to provide, operate and improve the Badminton Bot service, including responding to your requests and helping organise badminton activities.</p>
+
+      <h2>Sharing of Information</h2>
+      <p>We do not sell your personal information. Information may be processed by service providers that are necessary to operate the bot, including WhatsApp/Meta and our hosting and software providers.</p>
+
+      <h2>Data Retention</h2>
+      <p>We retain information only for as long as reasonably necessary to provide the service or where we have a legitimate legal or operational reason to retain it.</p>
+
+      <h2>Your Rights</h2>
+      <p>You may request access to or deletion of personal information associated with your use of Badminton Bot.</p>
+
+      <h2>Contact</h2>
+      <p>If you have questions about this Privacy Policy or want to request deletion of your information, contact:</p>
+      <p><strong>hassan307@hotmail.co.uk</strong></p>
+
+      <p><strong>Last updated:</strong> 3 September 2026</p>
+    </body>
+    </html>
+  `);
+});
 
 const PORT = process.env.PORT || 3000;
 const VERIFY_TOKEN = process.env.VERIFY_TOKEN;
