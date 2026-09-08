@@ -66,7 +66,6 @@ const bookingStates = new Map();
 
 const processedSquareEvents = new Set();
 
-
 // ============================================================
 // SQUARE WEBHOOK
 // ============================================================
@@ -189,13 +188,11 @@ app.post(
   }
 );
 
-
 // ============================================================
 // NORMAL JSON BODY PARSER
 // ============================================================
 
 app.use(express.json());
-
 
 // ============================================================
 // PRIVACY POLICY
@@ -310,7 +307,6 @@ app.get("/privacy-policy", (req, res) => {
 
 });
 
-
 // ============================================================
 // HOME / HEALTH CHECK
 // ============================================================
@@ -322,7 +318,6 @@ app.get("/", (req, res) => {
   );
 
 });
-
 
 // ============================================================
 // PAYMENT SUCCESS PAGE
@@ -371,7 +366,6 @@ app.get("/payment-success", (req, res) => {
   `);
 
 });
-
 
 // ============================================================
 // PAYMENT CANCELLED PAGE
@@ -424,7 +418,6 @@ app.get("/payment-cancelled", (req, res) => {
 
 });
 
-
 // ============================================================
 // META WEBHOOK VERIFICATION
 // ============================================================
@@ -439,7 +432,6 @@ app.get("/webhook", (req, res) => {
 
   const challenge =
     req.query["hub.challenge"];
-
 
   if (
     mode === "subscribe" &&
@@ -456,7 +448,6 @@ app.get("/webhook", (req, res) => {
 
   }
 
-
   console.log(
     "❌ WhatsApp webhook verification failed"
   );
@@ -464,7 +455,6 @@ app.get("/webhook", (req, res) => {
   return res.sendStatus(403);
 
 });
-
 
 // ============================================================
 // RECEIVE WHATSAPP MESSAGES
@@ -483,36 +473,29 @@ app.post("/webhook", async (req, res) => {
     const message =
       value?.messages?.[0];
 
-
     if (!message) {
       return;
     }
 
-
     const from =
       message.from;
 
-
     const text =
       message?.text?.body?.trim() || "";
-
 
     if (!text) {
       return;
     }
 
-
     console.log(
       `📩 Message from ${from}: ${text}`
     );
-
 
     const reply =
       await handleMessage(
         from,
         text
       );
-
 
     if (reply) {
 
@@ -534,7 +517,6 @@ app.post("/webhook", async (req, res) => {
 
 });
 
-
 // ============================================================
 // MAIN BOT LOGIC
 // ============================================================
@@ -547,10 +529,8 @@ async function handleMessage(
   const command =
     text.toLowerCase().trim();
 
-
   const state =
     bookingStates.get(phone);
-
 
   // ==========================================================
   // CANCEL / MENU
@@ -566,7 +546,6 @@ async function handleMessage(
     return getMainMenu();
 
   }
-
 
   // ==========================================================
   // GREETING
@@ -584,6 +563,23 @@ async function handleMessage(
 
   }
 
+  // ==========================================================
+  // ACTIVE BOOKING FLOW
+  // ==========================================================
+  // IMPORTANT:
+  // Check the user's current booking step BEFORE interpreting
+  // numbers such as 1 or 2 as main-menu options.
+  // ==========================================================
+
+  if (state) {
+
+    return await handleBookingFlow(
+      phone,
+      text,
+      state
+    );
+
+  }
 
   // ==========================================================
   // BOOK A SPACE
@@ -601,7 +597,6 @@ async function handleMessage(
         step: "confirm_session"
       }
     );
-
 
     return (
 
@@ -625,7 +620,6 @@ async function handleMessage(
 
   }
 
-
   // ==========================================================
   // CHECK AVAILABILITY
   // ==========================================================
@@ -641,7 +635,6 @@ async function handleMessage(
 
   }
 
-
   // ==========================================================
   // MY BOOKING
   // ==========================================================
@@ -654,7 +647,6 @@ async function handleMessage(
     return getMyBooking(phone);
 
   }
-
 
   // ==========================================================
   // MY DETAILS
@@ -669,7 +661,6 @@ async function handleMessage(
     const player =
       players.get(phone);
 
-
     if (!player) {
 
       return (
@@ -683,7 +674,6 @@ async function handleMessage(
       );
 
     }
-
 
     return (
 
@@ -703,7 +693,6 @@ async function handleMessage(
 
   }
 
-
   // ==========================================================
   // RANKINGS
   // ==========================================================
@@ -718,22 +707,6 @@ async function handleMessage(
 
   }
 
-
-  // ==========================================================
-  // BOOKING FLOW
-  // ==========================================================
-
-  if (state) {
-
-    return await handleBookingFlow(
-      phone,
-      text,
-      state
-    );
-
-  }
-
-
   // ==========================================================
   // SAVE PLAYER NAME
   // ==========================================================
@@ -744,7 +717,6 @@ async function handleMessage(
 
     const existingPlayer =
       players.get(phone);
-
 
     players.set(
       phone,
@@ -762,7 +734,6 @@ async function handleMessage(
       }
     );
 
-
     return (
 
       `Thanks, ${text.trim()}! 👋\n\n` +
@@ -775,7 +746,6 @@ async function handleMessage(
 
   }
 
-
   return (
 
     "🏸 I didn't understand that.\n\n" +
@@ -785,7 +755,6 @@ async function handleMessage(
   );
 
 }
-
 
 // ============================================================
 // MAIN MENU
@@ -799,22 +768,21 @@ function getMainMenu() {
 
     "What would you like to do?\n\n" +
 
-    "1️⃣ Book a space\n" +
+    "1️⃣ *Book a space*\n" +
 
-    "2️⃣ Check availability\n" +
+    "2️⃣ *Check availability*\n" +
 
-    "3️⃣ My booking\n" +
+    "3️⃣ *My booking*\n" +
 
-    "4️⃣ My details\n" +
+    "4️⃣ *My details*\n" +
 
-    "5️⃣ Rankings\n\n" +
+    "5️⃣ *Rankings*\n\n" +
 
     "Reply with the number or option."
 
   );
 
 }
-
 
 // ============================================================
 // BOOKING FLOW
@@ -828,7 +796,6 @@ async function handleBookingFlow(
 
   const command =
     text.toLowerCase().trim();
-
 
   // ==========================================================
   // CONFIRM SESSION
@@ -849,7 +816,6 @@ async function handleBookingFlow(
 
     }
 
-
     if (
       command !== "yes" &&
       command !== "y"
@@ -862,7 +828,6 @@ async function handleBookingFlow(
 
     }
 
-
     bookingStates.set(
       phone,
       {
@@ -870,11 +835,9 @@ async function handleBookingFlow(
       }
     );
 
-
     return getGenderSelection();
 
   }
-
 
   // ==========================================================
   // CHOOSE GENDER
@@ -885,7 +848,6 @@ async function handleBookingFlow(
   ) {
 
     let gender = null;
-
 
     if (
       command === "men" ||
@@ -899,7 +861,6 @@ async function handleBookingFlow(
 
     }
 
-
     if (
       command === "women" ||
       command === "woman" ||
@@ -912,25 +873,24 @@ async function handleBookingFlow(
 
     }
 
-
     if (!gender) {
 
       return (
 
-        "Please choose one:\n\n" +
+        "I just need to know which category you're booking for.\n\n" +
 
-        "1️⃣ Men\n" +
+        "1️⃣ *Men*\n" +
 
-        "2️⃣ Women"
+        "2️⃣ *Women*\n\n" +
+
+        "Reply *1* for Men or *2* for Women."
 
       );
 
     }
 
-
     const available =
       getRemainingSpaces(gender);
-
 
     if (
       available <= 0
@@ -946,7 +906,6 @@ async function handleBookingFlow(
 
     }
 
-
     bookingStates.set(
       phone,
       {
@@ -958,27 +917,27 @@ async function handleBookingFlow(
       }
     );
 
-
     return (
 
       `🏸 *${capitalize(gender)}'s spaces*\n\n` +
 
       `There are *${available}* spaces available.\n\n` +
 
-      "How many spaces would you like?\n\n" +
+      "How many spaces would you like to book?\n\n" +
 
-      "1️⃣ 1 space\n" +
+      "1️⃣ *1 space*\n" +
 
-      "2️⃣ 2 spaces\n" +
+      "2️⃣ *2 spaces*\n" +
 
-      "3️⃣ 3 spaces\n\n" +
+      "3️⃣ *3 spaces*\n\n" +
 
-      "Maximum 3 spaces per booking."
+      "Maximum *3 spaces* per booking.\n\n" +
+
+      "Reply with *1*, *2* or *3*."
 
     );
 
   }
-
 
   // ==========================================================
   // CHOOSE QUANTITY
@@ -991,7 +950,6 @@ async function handleBookingFlow(
     const quantity =
       Number(command);
 
-
     if (
       !Number.isInteger(quantity) ||
       quantity < 1 ||
@@ -1002,22 +960,22 @@ async function handleBookingFlow(
 
         "Please choose:\n\n" +
 
-        "1️⃣ 1 space\n" +
+        "1️⃣ *1 space*\n" +
 
-        "2️⃣ 2 spaces\n" +
+        "2️⃣ *2 spaces*\n" +
 
-        "3️⃣ 3 spaces"
+        "3️⃣ *3 spaces*\n\n" +
+
+        "Reply with *1*, *2* or *3*."
 
       );
 
     }
 
-
     const available =
       getRemainingSpaces(
         state.gender
       );
-
 
     if (
       quantity > available
@@ -1032,7 +990,6 @@ async function handleBookingFlow(
       );
 
     }
-
 
     bookingStates.set(
       phone,
@@ -1053,17 +1010,17 @@ async function handleBookingFlow(
       }
     );
 
-
     return (
 
       "👤 *Attendee 1*\n\n" +
 
-      "Please enter the *full name* of the first attendee."
+      "Please enter the *full name* of the first attendee.\n\n" +
+
+      "Example: *John Smith*"
 
     );
 
   }
-
 
   // ==========================================================
   // COLLECT ATTENDEE NAMES
@@ -1089,11 +1046,9 @@ async function handleBookingFlow(
 
     }
 
-
     state.attendeeNames.push(
       text.trim()
     );
-
 
     if (
       state.attendeeNames.length <
@@ -1103,12 +1058,10 @@ async function handleBookingFlow(
       state.currentAttendee =
         state.attendeeNames.length + 1;
 
-
       bookingStates.set(
         phone,
         state
       );
-
 
       return (
 
@@ -1119,7 +1072,6 @@ async function handleBookingFlow(
       );
 
     }
-
 
     bookingStates.set(
       phone,
@@ -1139,7 +1091,6 @@ async function handleBookingFlow(
       }
     );
 
-
     return getBookingConfirmation(
       state.gender,
       state.quantity,
@@ -1147,7 +1098,6 @@ async function handleBookingFlow(
     );
 
   }
-
 
   // ==========================================================
   // CONFIRM BOOKING
@@ -1174,7 +1124,6 @@ async function handleBookingFlow(
 
     }
 
-
     if (
       command !== "yes" &&
       command !== "y"
@@ -1190,12 +1139,10 @@ async function handleBookingFlow(
 
     }
 
-
     const available =
       getRemainingSpaces(
         state.gender
       );
-
 
     if (
       state.quantity > available
@@ -1213,7 +1160,6 @@ async function handleBookingFlow(
 
     }
 
-
     try {
 
       const paymentLink =
@@ -1223,7 +1169,6 @@ async function handleBookingFlow(
           state.quantity,
           state.attendeeNames
         );
-
 
       // ------------------------------------------------------
       // SAVE PENDING BOOKING
@@ -1267,9 +1212,7 @@ async function handleBookingFlow(
         }
       );
 
-
       bookingStates.delete(phone);
-
 
       return (
 
@@ -1299,7 +1242,6 @@ async function handleBookingFlow(
         error
       );
 
-
       return (
 
         "❌ Sorry, I couldn't create the payment link.\n\n" +
@@ -1312,7 +1254,6 @@ async function handleBookingFlow(
 
   }
 
-
   return (
 
     "🏸 Something went wrong with the booking.\n\n" +
@@ -1322,7 +1263,6 @@ async function handleBookingFlow(
   );
 
 }
-
 
 // ============================================================
 // GENDER SELECTION
@@ -1336,21 +1276,21 @@ function getGenderSelection() {
   const womenSpaces =
     getRemainingSpaces("women");
 
-
   return (
 
-    "🏸 *Choose your space*\n\n" +
+    "🏸 *Choose your category*\n\n" +
 
-    `1️⃣ Men — ${menSpaces} spaces available\n` +
+    "Please choose the category you are booking for:\n\n" +
 
-    `2️⃣ Women — ${womenSpaces} spaces available\n\n` +
+    `1️⃣ *Men* — ${menSpaces} spaces available\n` +
 
-    "Reply *1* or *2*."
+    `2️⃣ *Women* — ${womenSpaces} spaces available\n\n` +
+
+    "Reply *1* for Men or *2* for Women."
 
   );
 
 }
-
 
 // ============================================================
 // BOOKING CONFIRMATION
@@ -1366,7 +1306,6 @@ function getBookingConfirmation(
     quantity *
     badmintonSession.pricePerSpace;
 
-
   const names =
     attendeeNames
       .map(
@@ -1374,7 +1313,6 @@ function getBookingConfirmation(
           `${index + 1}. ${name}`
       )
       .join("\n");
-
 
   return (
 
@@ -1408,7 +1346,6 @@ function getBookingConfirmation(
 
 }
 
-
 // ============================================================
 // CREATE SQUARE PAYMENT LINK
 // ============================================================
@@ -1433,7 +1370,6 @@ async function createSquarePaymentLink(
 
   }
 
-
   if (
     !SQUARE_LOCATION_ID
   ) {
@@ -1444,20 +1380,16 @@ async function createSquarePaymentLink(
 
   }
 
-
   const totalAmount =
     quantity *
     badmintonSession.pricePerSpace *
     100;
 
-
   const idempotencyKey =
     crypto.randomUUID();
 
-
   const attendeeText =
     attendeeNames.join(", ");
-
 
   const paymentNote =
     `Badminton booking | ` +
@@ -1465,7 +1397,6 @@ async function createSquarePaymentLink(
     `${capitalize(gender)} | ` +
     `${quantity} spaces | ` +
     `${attendeeText}`;
-
 
   const requestBody = {
 
@@ -1509,7 +1440,6 @@ async function createSquarePaymentLink(
 
   };
 
-
   const response =
     await fetch(
       `${SQUARE_API_BASE}/v2/online-checkout/payment-links`,
@@ -1539,10 +1469,8 @@ async function createSquarePaymentLink(
       }
     );
 
-
   const data =
     await response.json();
-
 
   if (!response.ok) {
 
@@ -1551,14 +1479,12 @@ async function createSquarePaymentLink(
       data
     );
 
-
     throw new Error(
       data?.errors?.[0]?.detail ||
       "Square payment link creation failed."
     );
 
   }
-
 
   if (
     !data.payment_link?.url
@@ -1570,12 +1496,10 @@ async function createSquarePaymentLink(
 
   }
 
-
   console.log(
     "✅ Square payment link created:",
     data.payment_link.id
   );
-
 
   return {
 
@@ -1592,7 +1516,6 @@ async function createSquarePaymentLink(
 
 }
 
-
 // ============================================================
 // HANDLE SQUARE PAYMENT UPDATED
 // ============================================================
@@ -1604,7 +1527,6 @@ async function handleSquarePaymentUpdated(
   const payment =
     event?.data?.object?.payment;
 
-
   if (!payment) {
 
     console.log(
@@ -1615,14 +1537,14 @@ async function handleSquarePaymentUpdated(
 
   }
 
-
   console.log(
     `💳 Square payment ${payment.id} status: ${payment.status}`
   );
 
-
+  // ----------------------------------------------------------
   // We only confirm a booking once Square says
   // the payment is COMPLETED.
+  // ----------------------------------------------------------
 
   if (
     payment.status !== "COMPLETED"
@@ -1632,10 +1554,8 @@ async function handleSquarePaymentUpdated(
 
   }
 
-
   const orderId =
     payment.order_id;
-
 
   if (!orderId) {
 
@@ -1647,7 +1567,6 @@ async function handleSquarePaymentUpdated(
 
   }
 
-
   // ----------------------------------------------------------
   // FIND PENDING BOOKING USING SQUARE ORDER ID
   // ----------------------------------------------------------
@@ -1655,7 +1574,6 @@ async function handleSquarePaymentUpdated(
   let bookingPhone = null;
 
   let booking = null;
-
 
   for (
     const [phone, existingBooking]
@@ -1679,7 +1597,6 @@ async function handleSquarePaymentUpdated(
 
   }
 
-
   if (!booking) {
 
     console.log(
@@ -1690,7 +1607,6 @@ async function handleSquarePaymentUpdated(
 
   }
 
-
   // ----------------------------------------------------------
   // CHECK SPACES AGAIN
   // ----------------------------------------------------------
@@ -1700,7 +1616,6 @@ async function handleSquarePaymentUpdated(
       booking.gender
     );
 
-
   if (
     booking.quantity > available
   ) {
@@ -1708,7 +1623,6 @@ async function handleSquarePaymentUpdated(
     console.error(
       "❌ Payment completed but there are not enough spaces."
     );
-
 
     await sendWhatsAppMessage(
 
@@ -1724,11 +1638,9 @@ async function handleSquarePaymentUpdated(
 
     );
 
-
     return;
 
   }
-
 
   // ----------------------------------------------------------
   // CONVERT PENDING BOOKING TO PAID
@@ -1746,12 +1658,10 @@ async function handleSquarePaymentUpdated(
   booking.paidAt =
     new Date().toISOString();
 
-
   bookings.set(
     bookingPhone,
     booking
   );
-
 
   // ----------------------------------------------------------
   // SAVE PLAYER
@@ -1761,12 +1671,10 @@ async function handleSquarePaymentUpdated(
     booking.attendeeNames[0] ||
     "Player";
 
-
   const existingPlayer =
     players.get(
       bookingPhone
     );
-
 
   players.set(
     bookingPhone,
@@ -1789,7 +1697,6 @@ async function handleSquarePaymentUpdated(
     }
   );
 
-
   // ----------------------------------------------------------
   // SEND CONFIRMATION
   // ----------------------------------------------------------
@@ -1801,7 +1708,6 @@ async function handleSquarePaymentUpdated(
           `${index + 1}. ${name}`
       )
       .join("\n");
-
 
   await sendWhatsAppMessage(
 
@@ -1835,13 +1741,11 @@ async function handleSquarePaymentUpdated(
 
   );
 
-
   console.log(
     `✅ Booking confirmed for ${bookingPhone}`
   );
 
 }
-
 
 // ============================================================
 // VERIFY SQUARE WEBHOOK SIGNATURE
@@ -1864,7 +1768,6 @@ function verifySquareWebhookSignature(
       notificationUrl +
       rawBody;
 
-
     const expectedSignature =
       crypto
         .createHmac(
@@ -1879,7 +1782,6 @@ function verifySquareWebhookSignature(
           "base64"
         );
 
-
     const expectedBuffer =
       Buffer.from(
         expectedSignature
@@ -1890,7 +1792,6 @@ function verifySquareWebhookSignature(
         signature
       );
 
-
     if (
       expectedBuffer.length !==
       receivedBuffer.length
@@ -1899,7 +1800,6 @@ function verifySquareWebhookSignature(
       return false;
 
     }
-
 
     return crypto.timingSafeEqual(
       expectedBuffer,
@@ -1919,7 +1819,6 @@ function verifySquareWebhookSignature(
 
 }
 
-
 // ============================================================
 // AVAILABILITY
 // ============================================================
@@ -1931,7 +1830,6 @@ function getAvailabilityMessage() {
 
   const womenSpaces =
     getRemainingSpaces("women");
-
 
   return (
 
@@ -1951,7 +1849,6 @@ function getAvailabilityMessage() {
 
 }
 
-
 // ============================================================
 // REMAINING SPACES
 // ============================================================
@@ -1965,9 +1862,7 @@ function getRemainingSpaces(
       ? badmintonSession.menCapacity
       : badmintonSession.womenCapacity;
 
-
   let booked = 0;
-
 
   for (
     const booking
@@ -1988,14 +1883,12 @@ function getRemainingSpaces(
 
   }
 
-
   return Math.max(
     0,
     capacity - booked
   );
 
 }
-
 
 // ============================================================
 // MY BOOKING
@@ -2007,7 +1900,6 @@ function getMyBooking(
 
   const booking =
     bookings.get(phone);
-
 
   if (!booking) {
 
@@ -2023,7 +1915,6 @@ function getMyBooking(
 
   }
 
-
   const names =
     booking.attendeeNames
       .map(
@@ -2031,7 +1922,6 @@ function getMyBooking(
           `${index + 1}. ${name}`
       )
       .join("\n");
-
 
   if (
     booking.status === "pending"
@@ -2045,6 +1935,10 @@ function getMyBooking(
 
       `🕖 ${badmintonSession.startTime} - ${badmintonSession.endTime}\n` +
 
+      `📍 ${badmintonSession.venue}\n\n` +
+
+      `👥 Category: ${capitalize(booking.gender)}\n` +
+
       `🎟️ Spaces: ${booking.quantity}\n\n` +
 
       "*Attendees:*\n" +
@@ -2053,12 +1947,13 @@ function getMyBooking(
 
       "\n\n" +
 
+      `💷 Amount due: *£${booking.amount}*\n\n` +
+
       "Your payment has not yet been confirmed."
 
     );
 
   }
-
 
   return (
 
@@ -2097,7 +1992,6 @@ function getMyBooking(
 
 }
 
-
 // ============================================================
 // NAME VALIDATION
 // ============================================================
@@ -2109,12 +2003,10 @@ function isValidFullName(
   const cleaned =
     text.trim();
 
-
   const words =
     cleaned
       .split(/\s+/)
       .filter(Boolean);
-
 
   if (
     words.length < 2 ||
@@ -2125,12 +2017,10 @@ function isValidFullName(
 
   }
 
-
   return /^[a-zA-ZÀ-ÿ'’\- ]{2,100}$/
     .test(cleaned);
 
 }
-
 
 // ============================================================
 // RANKINGS
@@ -2147,7 +2037,6 @@ function getRanking() {
       )
       .slice(0, 10);
 
-
   if (
     ranked.length === 0
   ) {
@@ -2160,7 +2049,6 @@ function getRanking() {
     );
 
   }
-
 
   return (
 
@@ -2179,7 +2067,6 @@ function getRanking() {
 
 }
 
-
 // ============================================================
 // CAPITALISE
 // ============================================================
@@ -2192,14 +2079,12 @@ function capitalize(
     return "";
   }
 
-
   return (
     text.charAt(0).toUpperCase() +
     text.slice(1)
   );
 
 }
-
 
 // ============================================================
 // SEND WHATSAPP MESSAGE
@@ -2228,10 +2113,8 @@ async function sendWhatsAppMessage(
 
   }
 
-
   const url =
     `https://graph.facebook.com/v23.0/${PHONE_NUMBER_ID}/messages`;
-
 
   try {
 
@@ -2279,10 +2162,8 @@ async function sendWhatsAppMessage(
         }
       );
 
-
     const data =
       await response.json();
-
 
     if (!response.ok) {
 
@@ -2294,7 +2175,6 @@ async function sendWhatsAppMessage(
       return;
 
     }
-
 
     console.log(
       "✅ WhatsApp message sent"
@@ -2311,7 +2191,6 @@ async function sendWhatsAppMessage(
 
 }
 
-
 // ============================================================
 // START SERVER
 // ============================================================
@@ -2325,36 +2204,29 @@ app.listen(
       `🏸 Badminton Bot running on port ${PORT}`
     );
 
-
     console.log(
       `📅 Session: ${badmintonSession.date}`
     );
-
 
     console.log(
       `🕖 Time: ${badmintonSession.startTime} - ${badmintonSession.endTime}`
     );
 
-
     console.log(
       `📍 Venue: ${badmintonSession.venue}`
     );
-
 
     console.log(
       `👨 Men: ${badmintonSession.menCapacity}`
     );
 
-
     console.log(
       `👩 Women: ${badmintonSession.womenCapacity}`
     );
 
-
     console.log(
       `💳 Square environment: ${SQUARE_ENVIRONMENT}`
     );
-
 
     if (
       SQUARE_ACCESS_TOKEN &&
