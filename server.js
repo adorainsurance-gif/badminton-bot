@@ -25,7 +25,6 @@ const SQUARE_WEBHOOK_SIGNATURE_KEY =
   process.env.SQUARE_WEBHOOK_SIGNATURE_KEY;
 
 const BASE_URL = process.env.BASE_URL;
-
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD;
 
 const SUPABASE_URL = process.env.SUPABASE_URL;
@@ -40,12 +39,6 @@ const SQUARE_API_BASE =
 // SUPABASE
 // ============================================================
 
-if (!SUPABASE_URL || !SUPABASE_SECRET_KEY) {
-  console.warn(
-    "⚠️ Supabase credentials are not fully configured."
-  );
-}
-
 const SUPABASE_HEADERS = {
   apikey: SUPABASE_SECRET_KEY || "",
   Authorization: `Bearer ${SUPABASE_SECRET_KEY || ""}`,
@@ -54,21 +47,14 @@ const SUPABASE_HEADERS = {
 
 async function supabaseRequest(
   table,
-  options = {}
+  method = "GET",
+  query = "",
+  body = null,
+  prefer = ""
 ) {
   if (!SUPABASE_URL || !SUPABASE_SECRET_KEY) {
-    throw new Error("Supabase is not configured.");
+    throw new Error("Supabase credentials are missing.");
   }
-
-  const {
-    method = "GET",
-    query = "",
-    body = undefined,
-    prefer = ""
-  } = options;
-
-  const url =
-    `${SUPABASE_URL}/rest/v1/${table}${query}`;
 
   const headers = {
     ...SUPABASE_HEADERS
@@ -79,12 +65,12 @@ async function supabaseRequest(
   }
 
   const response = await fetch(
-    url,
+    `${SUPABASE_URL}/rest/v1/${table}${query}`,
     {
       method,
       headers,
       body:
-        body === undefined
+        body === null
           ? undefined
           : JSON.stringify(body)
     }
@@ -92,7 +78,7 @@ async function supabaseRequest(
 
   const text = await response.text();
 
-  let data = null;
+  let data;
 
   try {
     data = text ? JSON.parse(text) : null;
@@ -102,7 +88,7 @@ async function supabaseRequest(
 
   if (!response.ok) {
     console.error(
-      `❌ Supabase ${table} error:`,
+      `❌ Supabase ${table} ${method} error:`,
       data
     );
 
@@ -110,7 +96,7 @@ async function supabaseRequest(
       data?.message ||
       data?.hint ||
       data?.details ||
-      `Supabase request failed: ${response.status}`
+      `Supabase error ${response.status}`
     );
   }
 
@@ -118,219 +104,132 @@ async function supabaseRequest(
 }
 
 // ============================================================
-// LOCAL CACHE
+// SESSION
 // ============================================================
 
-let badmintonSession = {
+const badmintonSession = {
+
   id: null,
+
   date: "Saturday 12 September",
+
   startTime: "7:00 PM",
+
   endTime: "9:00 PM",
+
   venue: "Peckham Sports Centre",
+
   totalCapacity: 24,
+
   menCapacity: 12,
+
   womenCapacity: 12,
+
   pricePerSpace: 8
+
 };
 
-const players = new Map();
-const bookings = new Map();
+// ============================================================
+// TEMPORARY BOT STATE
+// ============================================================
+
 const bookingStates = new Map();
+
 const processedSquareEvents = new Set();
 
+// ============================================================
+// IN-MEMORY CACHE
+// ============================================================
+
+const players = new Map();
+
+const bookings = new Map();
+
 let databaseLoaded = false;
+
 let databaseLoading = null;
 
 // ============================================================
-// SUPABASE FIELD HELPERS
-// ============================================================
-
-function firstExistingField(
-  object,
-  candidates
-) {
-  if (!object) {
-    return null;
-  }
-
-  for (const field of candidates) {
-    if (
-      Object.prototype.hasOwnProperty.call(
-        object,
-        field
-      )
-    ) {
-      return field;
-    }
-  }
-
-  return null;
-}
-
-function valueFromRow(
-  row,
-  candidates,
-  fallback = undefined
-) {
-  const field =
-    firstExistingField(
-      row,
-      candidates
-    );
-
-  return field
-    ? row[field]
-    : fallback;
-}
-
-function buildObjectFromAvailableFields(
-  row,
-  values
-) {
-  const result = {};
-
-  for (
-    const [key, candidates] of
-    Object.entries(values)
-  ) {
-    const field =
-      firstExistingField(
-        row,
-        candidates
-      );
-
-    if (field) {
-      result[field] = values[key];
-    }
-  }
-
-  return result;
-}
-
-// ============================================================
-// LOAD SESSION FROM SUPABASE
+// LOAD SESSION
 // ============================================================
 
 async function loadSession() {
+
   try {
+
     const rows =
       await supabaseRequest(
         "sessions",
-        {
-          query:
-            "?select=*&order=id.asc&limit=1"
-        }
+        "GET",
+        "?select=*&order=id.asc&limit=1"
       );
 
-    if (
-      Array.isArray(rows) &&
-      rows.length > 0
-    ) {
-      const row = rows[0];
-
-      badmintonSession.id =
-        valueFromRow(
-          row,
-          ["id"]
-        );
-
-      badmintonSession.date =
-        valueFromRow(
-          row,
-          ["date", "session_date"],
-          badmintonSession.date
-        );
-
-      badmintonSession.startTime =
-        valueFromRow(
-          row,
-          [
-            "start_time",
-            "startTime",
-            "start"
-          ],
-          badmintonSession.startTime
-        );
-
-      badmintonSession.endTime =
-        valueFromRow(
-          row,
-          [
-            "end_time",
-            "endTime",
-            "end"
-          ],
-          badmintonSession.endTime
-        );
-
-      badmintonSession.venue =
-        valueFromRow(
-          row,
-          ["venue", "location"],
-          badmintonSession.venue
-        );
-
-      badmintonSession.totalCapacity =
-        Number(
-          valueFromRow(
-            row,
-            [
-              "total_capacity",
-              "totalCapacity",
-              "capacity"
-            ],
-            badmintonSession.totalCapacity
-          )
-        );
-
-      badmintonSession.menCapacity =
-        Number(
-          valueFromRow(
-            row,
-            [
-              "men_capacity",
-              "menCapacity",
-              "male_capacity"
-            ],
-            badmintonSession.menCapacity
-          )
-        );
-
-      badmintonSession.womenCapacity =
-        Number(
-          valueFromRow(
-            row,
-            [
-              "women_capacity",
-              "womenCapacity",
-              "female_capacity"
-            ],
-            badmintonSession.womenCapacity
-          )
-        );
-
-      badmintonSession.pricePerSpace =
-        Number(
-          valueFromRow(
-            row,
-            [
-              "price_per_space",
-              "pricePerSpace",
-              "price"
-            ],
-            badmintonSession.pricePerSpace
-          )
-        );
+    if (!rows || !rows.length) {
 
       console.log(
-        "✅ Session loaded from Supabase"
+        "ℹ️ No session found in Supabase."
       );
 
-    } else {
-      console.log(
-        "ℹ️ No session found in Supabase. Using default session."
-      );
+      return;
     }
+
+    const row = rows[0];
+
+    badmintonSession.id =
+      row.id;
+
+    /*
+     * IMPORTANT:
+     * Your sessions table uses session_date,
+     * not date.
+     */
+
+    badmintonSession.date =
+      row.session_date ||
+      badmintonSession.date;
+
+    badmintonSession.startTime =
+      row.start_time ||
+      badmintonSession.startTime;
+
+    badmintonSession.endTime =
+      row.end_time ||
+      badmintonSession.endTime;
+
+    badmintonSession.venue =
+      row.venue ||
+      badmintonSession.venue;
+
+    badmintonSession.pricePerSpace =
+      Number(
+        row.price_per_space ??
+        badmintonSession.pricePerSpace
+      );
+
+    badmintonSession.menCapacity =
+      Number(
+        row.men_capacity ??
+        badmintonSession.menCapacity
+      );
+
+    badmintonSession.womenCapacity =
+      Number(
+        row.women_capacity ??
+        badmintonSession.womenCapacity
+      );
+
+    badmintonSession.totalCapacity =
+      Number(
+        row.total_capacity ??
+        (
+          badmintonSession.menCapacity +
+          badmintonSession.womenCapacity
+        )
+      );
+
+    console.log(
+      "✅ Session loaded from Supabase"
+    );
 
   } catch (error) {
 
@@ -340,6 +239,97 @@ async function loadSession() {
     );
 
   }
+
+}
+
+// ============================================================
+// SAVE SESSION
+// ============================================================
+
+async function saveSession() {
+
+  if (!badmintonSession.id) {
+
+    const existing =
+      await supabaseRequest(
+        "sessions",
+        "GET",
+        "?select=id&order=id.asc&limit=1"
+      );
+
+    if (existing?.length) {
+
+      badmintonSession.id =
+        existing[0].id;
+
+    }
+
+  }
+
+  const sessionData = {
+
+    session_date:
+      badmintonSession.date,
+
+    start_time:
+      badmintonSession.startTime,
+
+    end_time:
+      badmintonSession.endTime,
+
+    venue:
+      badmintonSession.venue,
+
+    price_per_space:
+      badmintonSession.pricePerSpace,
+
+    men_capacity:
+      badmintonSession.menCapacity,
+
+    women_capacity:
+      badmintonSession.womenCapacity,
+
+    total_capacity:
+      badmintonSession.totalCapacity
+
+  };
+
+  if (badmintonSession.id) {
+
+    await supabaseRequest(
+      "sessions",
+      "PATCH",
+      `?id=eq.${encodeURIComponent(
+        badmintonSession.id
+      )}`,
+      sessionData,
+      "return=minimal"
+    );
+
+  } else {
+
+    const result =
+      await supabaseRequest(
+        "sessions",
+        "POST",
+        "",
+        sessionData,
+        "return=representation"
+      );
+
+    if (result?.[0]) {
+
+      badmintonSession.id =
+        result[0].id;
+
+    }
+
+  }
+
+  console.log(
+    "✅ Session saved to Supabase"
+  );
+
 }
 
 // ============================================================
@@ -347,15 +337,14 @@ async function loadSession() {
 // ============================================================
 
 async function loadCustomers() {
+
   try {
 
     const rows =
       await supabaseRequest(
         "customers",
-        {
-          query:
-            "?select=*"
-        }
+        "GET",
+        "?select=*"
       );
 
     players.clear();
@@ -363,15 +352,10 @@ async function loadCustomers() {
     for (const row of rows || []) {
 
       const phone =
-        valueFromRow(
-          row,
-          [
-            "phone",
-            "whatsapp",
-            "whatsapp_number",
-            "phone_number"
-          ]
-        );
+        row.phone ||
+        row.whatsapp ||
+        row.whatsapp_number ||
+        row.phone_number;
 
       if (!phone) {
         continue;
@@ -380,40 +364,29 @@ async function loadCustomers() {
       players.set(
         String(phone),
         {
+
           id:
-            valueFromRow(row, ["id"]),
+            row.id,
 
           name:
-            valueFromRow(
-              row,
-              ["name", "full_name"],
-              "Unknown"
-            ),
+            row.name ||
+            row.full_name ||
+            "Unknown",
 
           points:
             Number(
-              valueFromRow(
-                row,
-                ["points", "ranking_points"],
-                0
-              )
-            ) || 0,
+              row.points ||
+              row.ranking_points ||
+              0
+            ),
 
           paid:
-            Boolean(
-              valueFromRow(
-                row,
-                ["paid", "payment_status"],
-                false
-              ) === true ||
-              valueFromRow(
-                row,
-                ["payment_status"],
-                ""
-              ) === "PAID"
-            )
+            row.paid === true ||
+            row.payment_status === "PAID"
+
         }
       );
+
     }
 
     console.log(
@@ -428,6 +401,90 @@ async function loadCustomers() {
     );
 
   }
+
+}
+
+// ============================================================
+// SAVE CUSTOMER
+// ============================================================
+
+async function saveCustomer(
+  phone,
+  player
+) {
+
+  try {
+
+    let existing = [];
+
+    /*
+     * Search using the phone column used by the
+     * main customer structure.
+     */
+
+    existing =
+      await supabaseRequest(
+        "customers",
+        "GET",
+        `?select=*&phone=eq.${encodeURIComponent(
+          phone
+        )}&limit=1`
+      );
+
+    const customerData = {
+
+      name:
+        player.name,
+
+      phone:
+        phone,
+
+      points:
+        Number(player.points || 0),
+
+      paid:
+        Boolean(player.paid),
+
+      payment_status:
+        player.paid
+          ? "PAID"
+          : "NOT PAID"
+
+    };
+
+    if (existing?.length) {
+
+      await supabaseRequest(
+        "customers",
+        "PATCH",
+        `?id=eq.${encodeURIComponent(
+          existing[0].id
+        )}`,
+        customerData,
+        "return=minimal"
+      );
+
+    } else {
+
+      await supabaseRequest(
+        "customers",
+        "POST",
+        "",
+        customerData,
+        "return=minimal"
+      );
+
+    }
+
+  } catch (error) {
+
+    console.error(
+      "⚠️ Could not save customer:",
+      error.message
+    );
+
+  }
+
 }
 
 // ============================================================
@@ -435,15 +492,14 @@ async function loadCustomers() {
 // ============================================================
 
 async function loadBookings() {
+
   try {
 
     const rows =
       await supabaseRequest(
         "bookings",
-        {
-          query:
-            "?select=*&order=id.asc"
-        }
+        "GET",
+        "?select=*&order=id.asc"
       );
 
     bookings.clear();
@@ -451,171 +507,137 @@ async function loadBookings() {
     for (const row of rows || []) {
 
       const phone =
-        valueFromRow(
-          row,
-          [
-            "phone",
-            "whatsapp",
-            "whatsapp_number",
-            "phone_number"
-          ]
-        );
+        row.phone ||
+        row.whatsapp ||
+        row.whatsapp_number ||
+        row.phone_number;
 
       if (!phone) {
         continue;
       }
 
-      const attendeeNamesRaw =
-        valueFromRow(
-          row,
-          [
-            "attendee_names",
-            "attendeeNames",
-            "names"
-          ],
-          []
-        );
+      let attendeeNames =
+        row.attendee_names ||
+        row.attendeeNames ||
+        row.names ||
+        [];
 
-      let attendeeNames = [];
-
-      if (Array.isArray(attendeeNamesRaw)) {
-        attendeeNames =
-          attendeeNamesRaw;
-      } else if (
-        typeof attendeeNamesRaw === "string"
+      if (
+        typeof attendeeNames ===
+        "string"
       ) {
+
         try {
+
           attendeeNames =
-            JSON.parse(attendeeNamesRaw);
+            JSON.parse(
+              attendeeNames
+            );
+
         } catch {
+
           attendeeNames =
-            attendeeNamesRaw
+            attendeeNames
               .split(",")
-              .map(x => x.trim())
+              .map(
+                name =>
+                  name.trim()
+              )
               .filter(Boolean);
+
         }
+
+      }
+
+      if (
+        !Array.isArray(
+          attendeeNames
+        )
+      ) {
+
+        attendeeNames = [];
+
       }
 
       const booking = {
-        id:
-          valueFromRow(
-            row,
-            ["id"]
-          ),
 
-        status:
-          String(
-            valueFromRow(
-              row,
-              ["status"],
-              "pending"
-            )
-          ).toLowerCase(),
+        id:
+          row.id,
 
         phone:
           String(phone),
 
         gender:
           String(
-            valueFromRow(
-              row,
-              ["gender", "category"],
-              ""
-            )
+            row.gender ||
+            row.category ||
+            ""
           ).toLowerCase(),
 
         quantity:
           Number(
-            valueFromRow(
-              row,
-              ["quantity", "spaces"],
-              0
-            )
+            row.quantity ||
+            row.spaces ||
+            0
           ),
 
         attendeeNames,
 
+        status:
+          String(
+            row.status ||
+            "pending"
+          ).toLowerCase(),
+
         amount:
           Number(
-            valueFromRow(
-              row,
-              ["amount", "total_amount", "price"],
-              0
-            )
+            row.amount ||
+            row.total_amount ||
+            row.price ||
+            0
           ),
 
         squarePaymentLink:
-          valueFromRow(
-            row,
-            [
-              "square_payment_link",
-              "payment_link"
-            ],
-            ""
-          ),
+          row.square_payment_link ||
+          row.payment_link ||
+          "",
 
         squarePaymentLinkId:
-          valueFromRow(
-            row,
-            [
-              "square_payment_link_id",
-              "payment_link_id"
-            ],
-            ""
-          ),
+          row.square_payment_link_id ||
+          row.payment_link_id ||
+          "",
 
         squareOrderId:
-          valueFromRow(
-            row,
-            [
-              "square_order_id",
-              "order_id"
-            ],
-            ""
-          ),
+          row.square_order_id ||
+          row.order_id ||
+          "",
 
         squarePaymentId:
-          valueFromRow(
-            row,
-            [
-              "square_payment_id",
-              "payment_id"
-            ],
-            ""
-          ),
+          row.square_payment_id ||
+          row.payment_id ||
+          "",
 
         paymentStatus:
-          valueFromRow(
-            row,
-            ["payment_status"],
-            ""
-          ),
+          row.payment_status ||
+          "",
 
         createdAt:
-          valueFromRow(
-            row,
-            [
-              "created_at",
-              "createdAt"
-            ],
-            new Date().toISOString()
-          ),
+          row.created_at ||
+          row.createdAt ||
+          null,
 
         paidAt:
-          valueFromRow(
-            row,
-            [
-              "paid_at",
-              "paidAt"
-            ],
-            null
-          )
+          row.paid_at ||
+          row.paidAt ||
+          null
+
       };
 
       bookings.set(
         String(phone),
         booking
       );
+
     }
 
     console.log(
@@ -630,10 +652,175 @@ async function loadBookings() {
     );
 
   }
+
 }
 
 // ============================================================
-// LOAD DATABASE
+// SAVE BOOKING
+// ============================================================
+
+async function saveBooking(
+  booking
+) {
+
+  const bookingData = {
+
+    phone:
+      booking.phone,
+
+    gender:
+      booking.gender,
+
+    quantity:
+      booking.quantity,
+
+    status:
+      booking.status,
+
+    attendee_names:
+      JSON.stringify(
+        booking.attendeeNames || []
+      ),
+
+    amount:
+      booking.amount,
+
+    square_payment_link:
+      booking.squarePaymentLink ||
+      null,
+
+    square_payment_link_id:
+      booking.squarePaymentLinkId ||
+      null,
+
+    square_order_id:
+      booking.squareOrderId ||
+      null,
+
+    square_payment_id:
+      booking.squarePaymentId ||
+      null,
+
+    payment_status:
+      booking.paymentStatus ||
+      null,
+
+    created_at:
+      booking.createdAt ||
+      new Date().toISOString(),
+
+    paid_at:
+      booking.paidAt ||
+      null
+
+  };
+
+  try {
+
+    if (booking.id) {
+
+      await supabaseRequest(
+        "bookings",
+        "PATCH",
+        `?id=eq.${encodeURIComponent(
+          booking.id
+        )}`,
+        bookingData,
+        "return=minimal"
+      );
+
+      return;
+
+    }
+
+    const result =
+      await supabaseRequest(
+        "bookings",
+        "POST",
+        "",
+        bookingData,
+        "return=representation"
+      );
+
+    if (result?.[0]) {
+
+      booking.id =
+        result[0].id;
+
+    }
+
+  } catch (error) {
+
+    console.error(
+      "❌ Could not save booking:",
+      error.message
+    );
+
+    throw error;
+
+  }
+
+}
+
+// ============================================================
+// SAVE ATTENDEES
+// ============================================================
+
+async function saveAttendees(
+  booking
+) {
+
+  if (
+    !booking.attendeeNames?.length
+  ) {
+    return;
+  }
+
+  for (
+    const name
+    of booking.attendeeNames
+  ) {
+
+    try {
+
+      const attendeeData = {
+
+        name,
+
+        phone:
+          booking.phone,
+
+        gender:
+          booking.gender,
+
+        booking_id:
+          booking.id
+
+      };
+
+      await supabaseRequest(
+        "attendees",
+        "POST",
+        "",
+        attendeeData,
+        "return=minimal"
+      );
+
+    } catch (error) {
+
+      console.error(
+        `⚠️ Could not save attendee ${name}:`,
+        error.message
+      );
+
+    }
+
+  }
+
+}
+
+// ============================================================
+// DATABASE LOADER
 // ============================================================
 
 async function loadDatabase() {
@@ -650,7 +837,9 @@ async function loadDatabase() {
     (async () => {
 
       await loadSession();
+
       await loadCustomers();
+
       await loadBookings();
 
       databaseLoaded = true;
@@ -662,604 +851,15 @@ async function loadDatabase() {
     })();
 
   try {
+
     await databaseLoading;
+
   } finally {
+
     databaseLoading = null;
-  }
-}
 
-// ============================================================
-// SAVE SESSION
-// ============================================================
-
-async function saveSession() {
-
-  if (!SUPABASE_URL || !SUPABASE_SECRET_KEY) {
-    throw new Error(
-      "Supabase is not configured."
-    );
   }
 
-  const existingRows =
-    await supabaseRequest(
-      "sessions",
-      {
-        query:
-          "?select=*&order=id.asc&limit=1"
-      }
-    );
-
-  const existing =
-    existingRows?.[0] || {};
-
-  const data =
-    buildObjectFromAvailableFields(
-      existing,
-      {
-        date: [
-          "date",
-          "session_date"
-        ],
-
-        startTime: [
-          "start_time",
-          "startTime",
-          "start"
-        ],
-
-        endTime: [
-          "end_time",
-          "endTime",
-          "end"
-        ],
-
-        venue: [
-          "venue",
-          "location"
-        ],
-
-        totalCapacity: [
-          "total_capacity",
-          "totalCapacity",
-          "capacity"
-        ],
-
-        menCapacity: [
-          "men_capacity",
-          "menCapacity",
-          "male_capacity"
-        ],
-
-        womenCapacity: [
-          "women_capacity",
-          "womenCapacity",
-          "female_capacity"
-        ],
-
-        pricePerSpace: [
-          "price_per_space",
-          "pricePerSpace",
-          "price"
-        ]
-      }
-    );
-
-  if (
-    Object.keys(existing).length === 0
-  ) {
-
-    const fallbackData = {
-      date:
-        badmintonSession.date,
-
-      start_time:
-        badmintonSession.startTime,
-
-      end_time:
-        badmintonSession.endTime,
-
-      venue:
-        badmintonSession.venue,
-
-      total_capacity:
-        badmintonSession.totalCapacity,
-
-      men_capacity:
-        badmintonSession.menCapacity,
-
-      women_capacity:
-        badmintonSession.womenCapacity,
-
-      price_per_space:
-        badmintonSession.pricePerSpace
-    };
-
-    const created =
-      await supabaseRequest(
-        "sessions",
-        {
-          method: "POST",
-          query: "?select=*",
-          body: fallbackData,
-          prefer:
-            "return=representation"
-        }
-      );
-
-    if (created?.[0]) {
-      badmintonSession.id =
-        created[0].id;
-    }
-
-    return;
-  }
-
-  await supabaseRequest(
-    "sessions",
-    {
-      method: "PATCH",
-      query:
-        `?id=eq.${encodeURIComponent(
-          existing.id
-        )}`,
-      body: data,
-      prefer:
-        "return=representation"
-    }
-  );
-}
-
-// ============================================================
-// SAVE CUSTOMER
-// ============================================================
-
-async function saveCustomer(
-  phone,
-  player
-) {
-
-  const existingRows =
-    await supabaseRequest(
-      "customers",
-      {
-        query:
-          `?select=*&or=(phone.eq.${encodeURIComponent(
-            phone
-          )},whatsapp.eq.${encodeURIComponent(
-            phone
-          )},whatsapp_number.eq.${encodeURIComponent(
-            phone
-          )},phone_number.eq.${encodeURIComponent(
-            phone
-          )})&limit=1`
-      }
-    ).catch(async () => {
-      return await supabaseRequest(
-        "customers",
-        {
-          query: "?select=*&limit=1"
-        }
-      );
-    });
-
-  const existing =
-    existingRows?.[0] || {};
-
-  const data =
-    buildObjectFromAvailableFields(
-      existing,
-      {
-        name: [
-          "name",
-          "full_name"
-        ],
-
-        phone: [
-          "phone",
-          "whatsapp",
-          "whatsapp_number",
-          "phone_number"
-        ],
-
-        points: [
-          "points",
-          "ranking_points"
-        ],
-
-        paid: [
-          "paid"
-        ],
-
-        paymentStatus: [
-          "payment_status"
-        ]
-      }
-    );
-
-  if (
-    !Object.keys(existing).length
-  ) {
-
-    const fallbackData = {
-      name:
-        player.name,
-
-      phone,
-
-      points:
-        player.points || 0,
-
-      paid:
-        Boolean(player.paid),
-
-      payment_status:
-        player.paid
-          ? "PAID"
-          : "NOT PAID"
-    };
-
-    await supabaseRequest(
-      "customers",
-      {
-        method: "POST",
-        body: fallbackData,
-        prefer:
-          "return=minimal"
-      }
-    );
-
-    return;
-  }
-
-  await supabaseRequest(
-    "customers",
-    {
-      method: "PATCH",
-      query:
-        `?id=eq.${encodeURIComponent(
-          existing.id
-        )}`,
-      body: data,
-      prefer:
-        "return=minimal"
-    }
-  );
-}
-
-// ============================================================
-// SAVE BOOKING
-// ============================================================
-
-async function saveBooking(
-  booking
-) {
-
-  const existingRows =
-    await supabaseRequest(
-      "bookings",
-      {
-        query:
-          `?select=*&square_order_id=eq.${encodeURIComponent(
-            booking.squareOrderId || ""
-          )}&limit=1`
-      }
-    ).catch(() => []);
-
-  const existing =
-    existingRows?.[0] || {};
-
-  const attendeeNamesJson =
-    JSON.stringify(
-      booking.attendeeNames || []
-    );
-
-  const data =
-    buildObjectFromAvailableFields(
-      existing,
-      {
-        phone: [
-          "phone",
-          "whatsapp",
-          "whatsapp_number",
-          "phone_number"
-        ],
-
-        gender: [
-          "gender",
-          "category"
-        ],
-
-        quantity: [
-          "quantity",
-          "spaces"
-        ],
-
-        status: [
-          "status"
-        ],
-
-        attendeeNames: [
-          "attendee_names",
-          "attendeeNames",
-          "names"
-        ],
-
-        amount: [
-          "amount",
-          "total_amount",
-          "price"
-        ],
-
-        squarePaymentLink: [
-          "square_payment_link",
-          "payment_link"
-        ],
-
-        squarePaymentLinkId: [
-          "square_payment_link_id",
-          "payment_link_id"
-        ],
-
-        squareOrderId: [
-          "square_order_id",
-          "order_id"
-        ],
-
-        squarePaymentId: [
-          "square_payment_id",
-          "payment_id"
-        ],
-
-        paymentStatus: [
-          "payment_status"
-        ],
-
-        createdAt: [
-          "created_at",
-          "createdAt"
-        ],
-
-        paidAt: [
-          "paid_at",
-          "paidAt"
-        ]
-      }
-    );
-
-  if (
-    data.attendee_names !== undefined
-  ) {
-    data.attendee_names =
-      attendeeNamesJson;
-  }
-
-  if (
-    data.attendeeNames !== undefined
-  ) {
-    data.attendeeNames =
-      booking.attendeeNames || [];
-  }
-
-  if (
-    !Object.keys(existing).length
-  ) {
-
-    const fallbackData = {
-      phone:
-        booking.phone,
-
-      gender:
-        booking.gender,
-
-      quantity:
-        booking.quantity,
-
-      status:
-        booking.status,
-
-      attendee_names:
-        attendeeNamesJson,
-
-      amount:
-        booking.amount,
-
-      square_payment_link:
-        booking.squarePaymentLink,
-
-      square_payment_link_id:
-        booking.squarePaymentLinkId,
-
-      square_order_id:
-        booking.squareOrderId,
-
-      square_payment_id:
-        booking.squarePaymentId || null,
-
-      payment_status:
-        booking.paymentStatus || null,
-
-      created_at:
-        booking.createdAt,
-
-      paid_at:
-        booking.paidAt || null
-    };
-
-    const inserted =
-      await supabaseRequest(
-        "bookings",
-        {
-          method: "POST",
-          body: fallbackData,
-          query: "?select=*",
-          prefer:
-            "return=representation"
-        }
-      );
-
-    if (inserted?.[0]) {
-      booking.id =
-        inserted[0].id;
-    }
-
-    return;
-  }
-
-  await supabaseRequest(
-    "bookings",
-    {
-      method: "PATCH",
-      query:
-        `?id=eq.${encodeURIComponent(
-          existing.id
-        )}`,
-      body: data,
-      prefer:
-        "return=minimal"
-    }
-  );
-
-  booking.id =
-    existing.id;
-}
-
-// ============================================================
-// SAVE ATTENDEES
-// ============================================================
-
-async function saveAttendees(
-  booking
-) {
-
-  if (
-    !booking.attendeeNames ||
-    !booking.attendeeNames.length
-  ) {
-    return;
-  }
-
-  /*
-   * The attendees table is maintained separately.
-   * We try the common booking_id/name/phone/gender fields.
-   */
-
-  for (
-    const name of booking.attendeeNames
-  ) {
-
-    try {
-
-      const existingRows =
-        await supabaseRequest(
-          "attendees",
-          {
-            query:
-              `?select=*&name=eq.${encodeURIComponent(
-                name
-              )}&limit=1`
-          }
-        ).catch(() => []);
-
-      const existing =
-        existingRows?.[0] || {};
-
-      const data =
-        buildObjectFromAvailableFields(
-          existing,
-          {
-            name: [
-              "name",
-              "full_name"
-            ],
-
-            phone: [
-              "phone",
-              "whatsapp",
-              "whatsapp_number"
-            ],
-
-            gender: [
-              "gender",
-              "category"
-            ],
-
-            bookingId: [
-              "booking_id",
-              "bookingId"
-            ]
-          }
-        );
-
-      if (
-        data.booking_id !== undefined
-      ) {
-        data.booking_id =
-          booking.id;
-      }
-
-      if (
-        data.bookingId !== undefined
-      ) {
-        data.bookingId =
-          booking.id;
-      }
-
-      if (
-        Object.keys(existing).length
-      ) {
-
-        await supabaseRequest(
-          "attendees",
-          {
-            method: "PATCH",
-            query:
-              `?id=eq.${encodeURIComponent(
-                existing.id
-              )}`,
-            body: data,
-            prefer:
-              "return=minimal"
-          }
-        );
-
-      } else {
-
-        const fallbackData = {
-          name,
-          phone:
-            booking.phone,
-          gender:
-            booking.gender,
-          booking_id:
-            booking.id
-        };
-
-        await supabaseRequest(
-          "attendees",
-          {
-            method: "POST",
-            body: fallbackData,
-            prefer:
-              "return=minimal"
-          }
-        );
-      }
-
-    } catch (error) {
-
-      /*
-       * Do not stop a paid booking because an optional
-       * attendees-table field differs.
-       */
-
-      console.error(
-        "⚠️ Could not save attendee:",
-        name,
-        error.message
-      );
-
-    }
-  }
 }
 
 // ============================================================
@@ -1295,7 +895,7 @@ app.post(
         signature
       ) {
 
-        const isValid =
+        const valid =
           verifySquareWebhookSignature(
             rawBody,
             signature,
@@ -1303,20 +903,15 @@ app.post(
             SQUARE_WEBHOOK_SIGNATURE_KEY
           );
 
-        if (!isValid) {
+        if (!valid) {
 
           console.error(
             "❌ Invalid Square webhook signature"
           );
 
           return res.sendStatus(403);
+
         }
-
-      } else {
-
-        console.warn(
-          "⚠️ Square webhook signature validation unavailable"
-        );
 
       }
 
@@ -1324,13 +919,7 @@ app.post(
         JSON.parse(rawBody);
 
       console.log(
-        `💳 Square event received: ${event.type}`
-      );
-
-      console.log(
-        `🆔 Square event ID: ${
-          event.event_id || "none"
-        }`
+        `💳 Square event: ${event.type}`
       );
 
       if (
@@ -1340,20 +929,19 @@ app.post(
         )
       ) {
 
-        console.log(
-          `ℹ️ Event ${event.event_id} already processed`
-        );
-
         return res.sendStatus(200);
+
       }
 
       if (
-        event.type === "payment.updated"
+        event.type ===
+        "payment.updated"
       ) {
 
         await handleSquarePaymentUpdated(
           event
         );
+
       }
 
       if (event.event_id) {
@@ -1361,6 +949,7 @@ app.post(
         processedSquareEvents.add(
           event.event_id
         );
+
       }
 
       return res.sendStatus(200);
@@ -1373,22 +962,30 @@ app.post(
       );
 
       return res.sendStatus(500);
+
     }
+
   }
 );
 
 // ============================================================
-// NORMAL JSON BODY PARSER
-// ============================================================
-
-app.use(express.json());
-
-// ============================================================
-// DATABASE STARTUP
+// JSON BODY PARSER
 // ============================================================
 
 app.use(
-  async (req, res, next) => {
+  express.json()
+);
+
+// ============================================================
+// DATABASE MIDDLEWARE
+// ============================================================
+
+app.use(
+  async (
+    req,
+    res,
+    next
+  ) => {
 
     try {
 
@@ -1397,13 +994,14 @@ app.use(
     } catch (error) {
 
       console.error(
-        "❌ Database loading error:",
-        error
+        "❌ Database error:",
+        error.message
       );
 
     }
 
     next();
+
   }
 );
 
@@ -1422,6 +1020,7 @@ function adminAuthentication(
     return res.status(500).send(
       "Admin password has not been configured."
     );
+
   }
 
   const auth =
@@ -1440,17 +1039,15 @@ function adminAuthentication(
     return res.status(401).send(
       "Admin login required."
     );
+
   }
 
   try {
 
-    const encoded =
-      auth.split(" ")[1];
-
     const decoded =
       Buffer
         .from(
-          encoded,
+          auth.split(" ")[1],
           "base64"
         )
         .toString("utf8");
@@ -1482,6 +1079,7 @@ function adminAuthentication(
       return res.status(401).send(
         "Incorrect admin login."
       );
+
     }
 
     next();
@@ -1491,31 +1089,49 @@ function adminAuthentication(
     return res.status(401).send(
       "Invalid admin login."
     );
+
   }
+
 }
 
 // ============================================================
-// ADMIN - SAVE SESSION
+// ADMIN SAVE SESSION
 // ============================================================
 
 app.post(
   "/admin/session",
   adminAuthentication,
-  async (req, res) => {
+  async (
+    req,
+    res
+  ) => {
 
     try {
 
       const {
+
         date,
+
         startTime,
+
         endTime,
+
         venue,
+
         pricePerSpace,
+
         menCapacity,
+
         womenCapacity
+
       } = req.body;
 
-      if (!date || !startTime || !endTime || !venue) {
+      if (
+        !date ||
+        !startTime ||
+        !endTime ||
+        !venue
+      ) {
 
         return res.status(400).json({
           success: false,
@@ -1542,7 +1158,7 @@ app.post(
         return res.status(400).json({
           success: false,
           error:
-            "Invalid price."
+            "Please enter a valid price."
         });
 
       }
@@ -1555,7 +1171,7 @@ app.post(
         return res.status(400).json({
           success: false,
           error:
-            "Invalid men's capacity."
+            "Please enter a valid men's capacity."
         });
 
       }
@@ -1568,7 +1184,7 @@ app.post(
         return res.status(400).json({
           success: false,
           error:
-            "Invalid women's capacity."
+            "Please enter a valid women's capacity."
         });
 
       }
@@ -1602,15 +1218,13 @@ app.post(
       res.json({
         success: true,
         message:
-          "Session updated successfully.",
-        session:
-          badmintonSession
+          "Session updated successfully."
       });
 
     } catch (error) {
 
       console.error(
-        "❌ Admin session update failed:",
+        "❌ Session update error:",
         error
       );
 
@@ -1619,7 +1233,9 @@ app.post(
         error:
           error.message
       });
+
     }
+
   }
 );
 
@@ -1630,7 +1246,10 @@ app.post(
 app.get(
   "/admin",
   adminAuthentication,
-  async (req, res) => {
+  async (
+    req,
+    res
+  ) => {
 
     await loadDatabase();
 
@@ -1671,125 +1290,95 @@ app.get(
           Number(
             booking.amount
           ) || 0;
+
       }
+
     }
 
     const bookingRows =
-      [...bookings.entries()]
+      [...bookings.values()]
         .map(
-          ([phone, booking]) => {
+          booking => {
 
             const names =
-              (booking.attendeeNames || [])
-                .map(escapeHtml)
+              (
+                booking.attendeeNames ||
+                []
+              )
+                .map(
+                  escapeHtml
+                )
                 .join("<br>");
 
             const statusClass =
-              booking.status === "paid"
+              booking.status ===
+              "paid"
                 ? "paid"
                 : "pending";
 
             const statusText =
-              booking.status === "paid"
+              booking.status ===
+              "paid"
                 ? "PAID"
                 : "PENDING";
 
             return `
-              <tr>
-                <td>
-                  ${escapeHtml(
-                    booking.attendeeNames?.[0] ||
-                    "Unknown"
-                  )}
-                </td>
+<tr>
 
-                <td>
-                  ${capitalize(
-                    booking.gender || ""
-                  )}
-                </td>
+<td>
+${escapeHtml(
+  booking.attendeeNames?.[0] ||
+  "Unknown"
+)}
+</td>
 
-                <td>
-                  ${booking.quantity || 0}
-                </td>
+<td>
+${capitalize(
+  booking.gender
+)}
+</td>
 
-                <td>
-                  ${names}
-                </td>
+<td>
+${booking.quantity || 0}
+</td>
 
-                <td>
-                  ${escapeHtml(phone)}
-                </td>
+<td>
+${names}
+</td>
 
-                <td>
-                  <span class="status ${statusClass}">
-                    ${statusText}
-                  </span>
-                </td>
+<td>
+${escapeHtml(
+  booking.phone
+)}
+</td>
 
-                <td>
-                  £${Number(
-                    booking.amount || 0
-                  ).toFixed(2)}
-                </td>
+<td>
+<span class="status ${statusClass}">
+${statusText}
+</span>
+</td>
 
-                <td>
-                  ${
-                    booking.createdAt
-                      ? new Date(
-                          booking.createdAt
-                        ).toLocaleString(
-                          "en-GB"
-                        )
-                      : "-"
-                  }
-                </td>
-              </tr>
-            `;
-          }
-        )
-        .join("");
+<td>
+£${Number(
+  booking.amount || 0
+).toFixed(2)}
+</td>
 
-    const playerRows =
-      [...players.entries()]
-        .sort(
-          (a, b) =>
-            (b[1].points || 0) -
-            (a[1].points || 0)
-        )
-        .map(
-          ([phone, player], index) => {
+<td>
+${
+  booking.createdAt
+    ? new Date(
+        booking.createdAt
+      ).toLocaleString(
+        "en-GB"
+      )
+    : "-"
+}
+</td>
 
-            return `
-              <tr>
-                <td>
-                  ${index + 1}
-                </td>
+</tr>
+`;
 
-                <td>
-                  ${escapeHtml(
-                    player.name ||
-                    "Unknown"
-                  )}
-                </td>
-
-                <td>
-                  ${escapeHtml(phone)}
-                </td>
-
-                <td>
-                  ${player.points || 0}
-                </td>
-
-                <td>
-                  ${
-                    player.paid
-                      ? '<span class="status paid">PAID</span>'
-                      : '<span class="status pending">NOT PAID</span>'
-                  }
-                </td>
-              </tr>
-            `;
           }
         )
         .join("");
@@ -1804,8 +1393,8 @@ app.get(
 <meta charset="UTF-8">
 
 <meta
-  name="viewport"
-  content="width=device-width, initial-scale=1.0"
+name="viewport"
+content="width=device-width, initial-scale=1.0"
 >
 
 <title>Badminton Admin</title>
@@ -1813,339 +1402,362 @@ app.get(
 <style>
 
 * {
-  box-sizing: border-box;
+box-sizing: border-box;
 }
 
 body {
 
-  margin: 0;
+margin: 0;
 
-  font-family:
-    -apple-system,
-    BlinkMacSystemFont,
-    "Segoe UI",
-    Arial,
-    sans-serif;
+font-family:
+-apple-system,
+BlinkMacSystemFont,
+"Segoe UI",
+Arial,
+sans-serif;
 
-  background: #f5f7fa;
+background: #f5f7fa;
 
-  color: #17202a;
+color: #17202a;
+
 }
 
 .header {
 
-  background: #111827;
+background: #111827;
 
-  color: white;
+color: white;
 
-  padding: 24px 32px;
+padding: 24px 32px;
+
 }
 
 .header-inner {
 
-  max-width: 1400px;
+max-width: 1400px;
 
-  margin: auto;
+margin: auto;
 
-  display: flex;
+display: flex;
 
-  justify-content: space-between;
+justify-content: space-between;
 
-  align-items: center;
+align-items: center;
+
 }
 
 .header h1 {
 
-  margin: 0;
+margin: 0;
 
-  font-size: 25px;
+font-size: 25px;
+
 }
 
 .header p {
 
-  margin: 5px 0 0;
+margin: 5px 0 0;
 
-  opacity: .7;
+opacity: .7;
+
 }
 
 .container {
 
-  max-width: 1400px;
+max-width: 1400px;
 
-  margin: 30px auto;
+margin: 30px auto;
 
-  padding: 0 20px;
+padding: 0 20px;
+
 }
 
-.session-card,
-.section {
+.card {
 
-  background: white;
+background: white;
 
-  border-radius: 14px;
+border-radius: 14px;
 
-  padding: 25px;
+padding: 25px;
 
-  margin-bottom: 25px;
+margin-bottom: 25px;
 
-  box-shadow:
-    0 2px 10px rgba(0,0,0,.05);
+box-shadow:
+0 2px 10px rgba(0,0,0,.05);
+
 }
 
-.session-card h2,
-.section h2 {
+.card h2 {
 
-  margin-top: 0;
+margin-top: 0;
+
 }
 
 .edit-grid {
 
-  display: grid;
+display: grid;
 
-  grid-template-columns:
-    repeat(auto-fit, minmax(180px, 1fr));
+grid-template-columns:
+repeat(auto-fit, minmax(200px, 1fr));
 
-  gap: 15px;
+gap: 18px;
 
-  margin-top: 20px;
 }
 
 .field {
 
-  display: flex;
+display: flex;
 
-  flex-direction: column;
+flex-direction: column;
 
-  gap: 7px;
+gap: 7px;
+
 }
 
 .field label {
 
-  font-weight: 600;
+font-weight: 600;
 
-  font-size: 13px;
+font-size: 13px;
 
-  color: #374151;
+color: #374151;
+
 }
 
 .field input {
 
-  width: 100%;
+padding: 12px;
 
-  padding: 11px 12px;
+border:
+1px solid #d1d5db;
 
-  border:
-    1px solid #d1d5db;
+border-radius: 8px;
 
-  border-radius: 8px;
+font-size: 15px;
 
-  font-size: 14px;
+width: 100%;
 
-  background: white;
+}
+
+.field input:focus {
+
+outline: none;
+
+border-color: #111827;
+
 }
 
 .save-button {
 
-  margin-top: 18px;
+margin-top: 20px;
 
-  background: #111827;
+background: #111827;
 
-  color: white;
+color: white;
 
-  border: 0;
+border: 0;
 
-  border-radius: 8px;
+border-radius: 8px;
 
-  padding: 12px 18px;
+padding: 13px 22px;
 
-  font-weight: 600;
+font-size: 14px;
 
-  cursor: pointer;
+font-weight: 600;
+
+cursor: pointer;
+
 }
 
 .save-button:hover {
 
-  opacity: .9;
+opacity: .9;
+
 }
 
 .save-message {
 
-  display: inline-block;
+margin-left: 12px;
 
-  margin-left: 12px;
+font-size: 14px;
 
-  font-size: 14px;
+font-weight: 600;
+
 }
 
 .session-details {
 
-  display: grid;
+display: grid;
 
-  grid-template-columns:
-    repeat(auto-fit, minmax(180px, 1fr));
+grid-template-columns:
+repeat(auto-fit, minmax(180px, 1fr));
 
-  gap: 15px;
+gap: 15px;
 
-  margin-top: 20px;
 }
 
 .detail {
 
-  background: #f8fafc;
+background: #f8fafc;
 
-  padding: 15px;
+padding: 15px;
 
-  border-radius: 10px;
+border-radius: 10px;
+
 }
 
 .detail strong {
 
-  display: block;
+display: block;
 
-  margin-bottom: 5px;
+margin-bottom: 5px;
+
 }
 
 .stats {
 
-  display: grid;
+display: grid;
 
-  grid-template-columns:
-    repeat(auto-fit, minmax(200px, 1fr));
+grid-template-columns:
+repeat(auto-fit, minmax(200px, 1fr));
 
-  gap: 18px;
+gap: 18px;
 
-  margin-bottom: 30px;
+margin-bottom: 25px;
+
 }
 
 .stat {
 
-  background: white;
+background: white;
 
-  border-radius: 14px;
+border-radius: 14px;
 
-  padding: 22px;
+padding: 22px;
 
-  box-shadow:
-    0 2px 10px rgba(0,0,0,.05);
+box-shadow:
+0 2px 10px rgba(0,0,0,.05);
+
 }
 
 .stat-label {
 
-  color: #6b7280;
+color: #6b7280;
 
-  font-size: 14px;
+font-size: 14px;
+
 }
 
 .stat-number {
 
-  font-size: 32px;
+font-size: 32px;
 
-  font-weight: 700;
+font-weight: 700;
 
-  margin-top: 8px;
+margin-top: 8px;
+
 }
 
 .table-wrapper {
 
-  overflow-x: auto;
+overflow-x: auto;
+
 }
 
 table {
 
-  width: 100%;
+width: 100%;
 
-  border-collapse: collapse;
+border-collapse: collapse;
 
-  min-width: 850px;
+min-width: 850px;
+
 }
 
 th {
 
-  text-align: left;
+text-align: left;
 
-  background: #f8fafc;
+background: #f8fafc;
 
-  padding: 13px;
+padding: 13px;
 
-  font-size: 13px;
+font-size: 13px;
 
-  color: #4b5563;
+color: #4b5563;
+
 }
 
 td {
 
-  padding: 14px 13px;
+padding: 14px 13px;
 
-  border-top:
-    1px solid #edf0f3;
+border-top:
+1px solid #edf0f3;
 
-  font-size: 14px;
+font-size: 14px;
+
 }
 
 .status {
 
-  display: inline-block;
+display: inline-block;
 
-  padding: 5px 9px;
+padding: 5px 9px;
 
-  border-radius: 999px;
+border-radius: 999px;
 
-  font-size: 11px;
+font-size: 11px;
 
-  font-weight: 700;
+font-weight: 700;
+
 }
 
 .status.paid {
 
-  background: #dcfce7;
+background: #dcfce7;
 
-  color: #166534;
+color: #166534;
+
 }
 
 .status.pending {
 
-  background: #fef3c7;
+background: #fef3c7;
 
-  color: #92400e;
-}
+color: #92400e;
 
-.empty {
-
-  text-align: center;
-
-  padding: 35px;
-
-  color: #6b7280;
 }
 
 .refresh {
 
-  background: white;
+background: white;
 
-  border: 1px solid #d1d5db;
+border:
+1px solid #d1d5db;
 
-  border-radius: 8px;
+border-radius: 8px;
 
-  padding: 9px 14px;
+padding: 9px 14px;
 
-  cursor: pointer;
+cursor: pointer;
+
 }
 
-@media (max-width: 600px) {
+@media(max-width:600px) {
 
-  .header {
-    padding: 20px;
-  }
+.header {
+padding: 20px;
+}
 
-  .container {
-    padding: 0 12px;
-    margin-top: 18px;
-  }
+.container {
+padding: 0 12px;
+margin-top: 18px;
+}
 
-  .session-card,
-  .section {
-    padding: 18px;
-  }
+.card {
+padding: 18px;
+}
 
 }
 
@@ -2157,342 +1769,371 @@ td {
 
 <div class="header">
 
-  <div class="header-inner">
+<div class="header-inner">
 
-    <div>
+<div>
 
-      <h1>🏸 Badminton Admin</h1>
+<h1>🏸 Badminton Admin</h1>
 
-      <p>Session management dashboard</p>
+<p>Session management dashboard</p>
 
-    </div>
+</div>
 
-    <button
-      class="refresh"
-      onclick="location.reload()"
-    >
-      Refresh
-    </button>
+<button
+class="refresh"
+onclick="location.reload()"
+>
+Refresh
+</button>
 
-  </div>
+</div>
 
 </div>
 
 <div class="container">
 
-  <div class="session-card">
+<!-- EDIT SESSION -->
 
-    <h2>⚙️ Edit Session</h2>
+<div class="card">
 
-    <div class="edit-grid">
+<h2>⚙️ Session Details</h2>
 
-      <div class="field">
+<p>
+Edit any of the session information below.
+Changes are saved permanently to Supabase.
+</p>
+
+<div class="edit-grid">
 
-        <label>Date</label>
+<div class="field">
 
-        <input
-          id="date"
-          value="${escapeHtml(
-            badmintonSession.date
-          )}"
-        >
+<label>
+📅 Date
+</label>
 
-      </div>
+<input
+id="date"
+type="text"
+value="${escapeHtml(
+  badmintonSession.date
+)}"
+placeholder="Saturday 12 September"
+>
 
-      <div class="field">
+</div>
 
-        <label>Start Time</label>
+<div class="field">
 
-        <input
-          id="startTime"
-          value="${escapeHtml(
-            badmintonSession.startTime
-          )}"
-        >
+<label>
+🕖 Start Time
+</label>
 
-      </div>
+<input
+id="startTime"
+type="text"
+value="${escapeHtml(
+  badmintonSession.startTime
+)}"
+placeholder="7:00 PM"
+>
 
-      <div class="field">
+</div>
 
-        <label>End Time</label>
+<div class="field">
 
-        <input
-          id="endTime"
-          value="${escapeHtml(
-            badmintonSession.endTime
-          )}"
-        >
+<label>
+🕘 End Time
+</label>
 
-      </div>
+<input
+id="endTime"
+type="text"
+value="${escapeHtml(
+  badmintonSession.endTime
+)}"
+placeholder="9:00 PM"
+>
 
-      <div class="field">
+</div>
 
-        <label>Venue</label>
+<div class="field">
 
-        <input
-          id="venue"
-          value="${escapeHtml(
-            badmintonSession.venue
-          )}"
-        >
+<label>
+📍 Venue
+</label>
 
-      </div>
+<input
+id="venue"
+type="text"
+value="${escapeHtml(
+  badmintonSession.venue
+)}"
+placeholder="Peckham Sports Centre"
+>
 
-      <div class="field">
+</div>
 
-        <label>Price Per Space (£)</label>
+<div class="field">
 
-        <input
-          id="pricePerSpace"
-          type="number"
-          min="0"
-          step="0.01"
-          value="${badmintonSession.pricePerSpace}"
-        >
+<label>
+💷 Price Per Space (£)
+</label>
 
-      </div>
+<input
+id="pricePerSpace"
+type="number"
+min="0"
+step="0.01"
+value="${badmintonSession.pricePerSpace}"
+>
 
-      <div class="field">
+</div>
 
-        <label>Men's Capacity</label>
+<div class="field">
 
-        <input
-          id="menCapacity"
-          type="number"
-          min="0"
-          step="1"
-          value="${badmintonSession.menCapacity}"
-        >
+<label>
+👨 Men's Capacity
+</label>
 
-      </div>
+<input
+id="menCapacity"
+type="number"
+min="0"
+step="1"
+value="${badmintonSession.menCapacity}"
+>
 
-      <div class="field">
+</div>
 
-        <label>Women's Capacity</label>
+<div class="field">
 
-        <input
-          id="womenCapacity"
-          type="number"
-          min="0"
-          step="1"
-          value="${badmintonSession.womenCapacity}"
-        >
+<label>
+👩 Women's Capacity
+</label>
 
-      </div>
+<input
+id="womenCapacity"
+type="number"
+min="0"
+step="1"
+value="${badmintonSession.womenCapacity}"
+>
 
-    </div>
+</div>
 
-    <button
-      class="save-button"
-      onclick="saveSession()"
-    >
-      Save Changes
-    </button>
+<div class="field">
 
-    <span
-      id="saveMessage"
-      class="save-message"
-    ></span>
+<label>
+🎟️ Total Capacity
+</label>
 
-  </div>
+<input
+type="number"
+value="${badmintonSession.totalCapacity}"
+disabled
+>
 
-  <div class="session-card">
+</div>
 
-    <h2>Current Session</h2>
+</div>
 
-    <div class="session-details">
+<button
+class="save-button"
+onclick="saveSession()"
+>
+Save Changes
+</button>
 
-      <div class="detail">
-        <strong>📅 Date</strong>
-        ${escapeHtml(
-          badmintonSession.date
-        )}
-      </div>
+<span
+id="saveMessage"
+class="save-message"
+></span>
 
-      <div class="detail">
-        <strong>🕖 Time</strong>
-        ${escapeHtml(
-          badmintonSession.startTime
-        )}
-        -
-        ${escapeHtml(
-          badmintonSession.endTime
-        )}
-      </div>
+</div>
 
-      <div class="detail">
-        <strong>📍 Venue</strong>
-        ${escapeHtml(
-          badmintonSession.venue
-        )}
-      </div>
+<!-- CURRENT SESSION -->
 
-      <div class="detail">
-        <strong>💷 Price</strong>
-        £${Number(
-          badmintonSession.pricePerSpace
-        ).toFixed(2)}
-        per space
-      </div>
+<div class="card">
 
-    </div>
+<h2>📋 Current Session</h2>
 
-  </div>
+<div class="session-details">
 
-  <div class="stats">
+<div class="detail">
 
-    <div class="stat">
+<strong>📅 Date</strong>
 
-      <div class="stat-label">
-        Total Spaces Remaining
-      </div>
+${escapeHtml(
+  badmintonSession.date
+)}
 
-      <div class="stat-number">
-        ${totalRemaining}
-      </div>
+</div>
 
-    </div>
+<div class="detail">
 
-    <div class="stat">
+<strong>🕖 Time</strong>
 
-      <div class="stat-label">
-        Total Spaces Booked
-      </div>
+${escapeHtml(
+  badmintonSession.startTime
+)}
+-
+${escapeHtml(
+  badmintonSession.endTime
+)}
 
-      <div class="stat-number">
-        ${totalBooked}
-      </div>
+</div>
 
-    </div>
+<div class="detail">
 
-    <div class="stat">
+<strong>📍 Venue</strong>
 
-      <div class="stat-label">
-        Men's Spaces
-      </div>
+${escapeHtml(
+  badmintonSession.venue
+)}
 
-      <div class="stat-number">
-        ${menBooked}/${badmintonSession.menCapacity}
-      </div>
+</div>
 
-    </div>
+<div class="detail">
 
-    <div class="stat">
+<strong>💷 Price</strong>
 
-      <div class="stat-label">
-        Women's Spaces
-      </div>
+£${Number(
+  badmintonSession.pricePerSpace
+).toFixed(2)}
 
-      <div class="stat-number">
-        ${womenBooked}/${badmintonSession.womenCapacity}
-      </div>
+per space
 
-    </div>
+</div>
 
-    <div class="stat">
+</div>
 
-      <div class="stat-label">
-        Revenue Received
-      </div>
+</div>
 
-      <div class="stat-number">
-        £${revenue.toFixed(2)}
-      </div>
+<!-- STATS -->
 
-    </div>
+<div class="stats">
 
-  </div>
+<div class="stat">
 
-  <div class="section">
+<div class="stat-label">
+Total Spaces Remaining
+</div>
 
-    <h2>📋 Bookings</h2>
+<div class="stat-number">
+${totalRemaining}
+</div>
 
-    ${
-      bookingRows
-        ? `
-          <div class="table-wrapper">
+</div>
 
-            <table>
+<div class="stat">
 
-              <thead>
+<div class="stat-label">
+Total Spaces Booked
+</div>
 
-                <tr>
+<div class="stat-number">
+${totalBooked}
+</div>
 
-                  <th>Player</th>
-                  <th>Category</th>
-                  <th>Spaces</th>
-                  <th>Attendees</th>
-                  <th>WhatsApp</th>
-                  <th>Payment</th>
-                  <th>Amount</th>
-                  <th>Booked</th>
+</div>
 
-                </tr>
+<div class="stat">
 
-              </thead>
+<div class="stat-label">
+Men's Spaces
+</div>
 
-              <tbody>
+<div class="stat-number">
+${menBooked}/${badmintonSession.menCapacity}
+</div>
 
-                ${bookingRows}
+</div>
 
-              </tbody>
+<div class="stat">
 
-            </table>
+<div class="stat-label">
+Women's Spaces
+</div>
 
-          </div>
-        `
-        : `
-          <div class="empty">
-            No bookings yet.
-          </div>
-        `
-    }
+<div class="stat-number">
+${womenBooked}/${badmintonSession.womenCapacity}
+</div>
 
-  </div>
+</div>
 
-  <div class="section">
+<div class="stat">
 
-    <h2>👤 Customers & Rankings</h2>
+<div class="stat-label">
+Revenue Received
+</div>
 
-    ${
-      playerRows
-        ? `
-          <div class="table-wrapper">
+<div class="stat-number">
+£${revenue.toFixed(2)}
+</div>
 
-            <table>
+</div>
 
-              <thead>
+</div>
 
-                <tr>
+<!-- BOOKINGS -->
 
-                  <th>#</th>
-                  <th>Name</th>
-                  <th>WhatsApp</th>
-                  <th>Points</th>
-                  <th>Payment</th>
+<div class="card">
 
-                </tr>
+<h2>📋 Bookings</h2>
 
-              </thead>
+${
+  bookingRows
+    ? `
+<div class="table-wrapper">
 
-              <tbody>
+<table>
 
-                ${playerRows}
+<thead>
 
-              </tbody>
+<tr>
 
-            </table>
+<th>Player</th>
 
-          </div>
-        `
-        : `
-          <div class="empty">
-            No customers yet.
-          </div>
-        `
-    }
+<th>Category</th>
 
-  </div>
+<th>Spaces</th>
+
+<th>Attendees</th>
+
+<th>WhatsApp</th>
+
+<th>Payment</th>
+
+<th>Amount</th>
+
+<th>Booked</th>
+
+</tr>
+
+</thead>
+
+<tbody>
+
+${bookingRows}
+
+</tbody>
+
+</table>
+
+</div>
+`
+    : `
+<div style="
+text-align:center;
+padding:35px;
+color:#6b7280;
+">
+No bookings yet.
+</div>
+`
+}
+
+</div>
 
 </div>
 
@@ -2500,93 +2141,108 @@ td {
 
 async function saveSession() {
 
-  const message =
-    document.getElementById(
-      "saveMessage"
-    );
+const message =
+document.getElementById(
+"saveMessage"
+);
 
-  message.textContent =
-    "Saving...";
+message.textContent =
+"Saving...";
 
-  try {
+message.style.color =
+"#374151";
 
-    const response =
-      await fetch(
-        "/admin/session",
-        {
-          method: "POST",
+try {
 
-          headers: {
-            "Content-Type":
-              "application/json"
-          },
+const response =
+await fetch(
+"/admin/session",
+{
 
-          body:
-            JSON.stringify({
+method: "POST",
 
-              date:
-                document.getElementById(
-                  "date"
-                ).value,
+headers: {
+"Content-Type":
+"application/json"
+},
 
-              startTime:
-                document.getElementById(
-                  "startTime"
-                ).value,
+body:
+JSON.stringify({
 
-              endTime:
-                document.getElementById(
-                  "endTime"
-                ).value,
+date:
+document.getElementById(
+"date"
+).value,
 
-              venue:
-                document.getElementById(
-                  "venue"
-                ).value,
+startTime:
+document.getElementById(
+"startTime"
+).value,
 
-              pricePerSpace:
-                document.getElementById(
-                  "pricePerSpace"
-                ).value,
+endTime:
+document.getElementById(
+"endTime"
+).value,
 
-              menCapacity:
-                document.getElementById(
-                  "menCapacity"
-                ).value,
+venue:
+document.getElementById(
+"venue"
+).value,
 
-              womenCapacity:
-                document.getElementById(
-                  "womenCapacity"
-                ).value
+pricePerSpace:
+document.getElementById(
+"pricePerSpace"
+).value,
 
-            })
-        }
-      );
+menCapacity:
+document.getElementById(
+"menCapacity"
+).value,
 
-    const data =
-      await response.json();
+womenCapacity:
+document.getElementById(
+"womenCapacity"
+).value
 
-    if (!response.ok) {
-      throw new Error(
-        data.error ||
-        "Could not save changes."
-      );
-    }
+})
 
-    message.textContent =
-      "✅ Saved successfully.";
+}
+);
 
-    setTimeout(
-      () => location.reload(),
-      700
-    );
+const data =
+await response.json();
 
-  } catch (error) {
+if (!response.ok) {
 
-    message.textContent =
-      "❌ " + error.message;
+throw new Error(
+data.error ||
+"Could not save changes."
+);
 
-  }
+}
+
+message.textContent =
+"✅ Saved successfully.";
+
+message.style.color =
+"#166534";
+
+setTimeout(
+function() {
+location.reload();
+},
+700
+);
+
+} catch(error) {
+
+message.textContent =
+"❌ " + error.message;
+
+message.style.color =
+"#991b1b";
+
+}
 
 }
 
@@ -2595,7 +2251,8 @@ async function saveSession() {
 </body>
 
 </html>
-    `);
+`);
+
   }
 );
 
@@ -2617,25 +2274,26 @@ app.get(
 <title>Privacy Policy - Badminton Bot</title>
 
 <meta
-  name="viewport"
-  content="width=device-width, initial-scale=1"
+name="viewport"
+content="width=device-width, initial-scale=1"
 >
 
 <style>
 
 body {
 
-  font-family: Arial, sans-serif;
+font-family: Arial, sans-serif;
 
-  max-width: 800px;
+max-width: 800px;
 
-  margin: 40px auto;
+margin: 40px auto;
 
-  padding: 20px;
+padding: 20px;
 
-  line-height: 1.6;
+line-height: 1.6;
 
-  color: #222;
+color: #222;
+
 }
 
 </style>
@@ -2705,7 +2363,8 @@ information associated with your use of the bot.
 </body>
 
 </html>
-  `);
+`);
+
   }
 );
 
@@ -2720,6 +2379,7 @@ app.get(
     res.status(200).send(
       "🏸 Badminton Bot is running!"
     );
+
   }
 );
 
@@ -2739,8 +2399,8 @@ app.get(
 <head>
 
 <meta
-  name="viewport"
-  content="width=device-width, initial-scale=1"
+name="viewport"
+content="width=device-width, initial-scale=1"
 >
 
 <title>Payment Successful</title>
@@ -2769,7 +2429,8 @@ on WhatsApp.
 </body>
 
 </html>
-  `);
+`);
+
   }
 );
 
@@ -2789,8 +2450,8 @@ app.get(
 <head>
 
 <meta
-  name="viewport"
-  content="width=device-width, initial-scale=1"
+name="viewport"
+content="width=device-width, initial-scale=1"
 >
 
 <title>Payment Cancelled</title>
@@ -2818,7 +2479,8 @@ Your spaces have not been booked.
 </body>
 
 </html>
-  `);
+`);
+
   }
 );
 
@@ -2851,19 +2513,24 @@ app.get(
       return res
         .status(200)
         .send(challenge);
+
     }
 
     return res.sendStatus(403);
+
   }
 );
 
 // ============================================================
-// RECEIVE WHATSAPP MESSAGES
+// WHATSAPP WEBHOOK
 // ============================================================
 
 app.post(
   "/webhook",
-  async (req, res) => {
+  async (
+    req,
+    res
+  ) => {
 
     res.sendStatus(200);
 
@@ -2908,6 +2575,7 @@ app.post(
           from,
           reply
         );
+
       }
 
     } catch (error) {
@@ -2916,12 +2584,14 @@ app.post(
         "❌ WhatsApp webhook error:",
         error
       );
+
     }
+
   }
 );
 
 // ============================================================
-// MAIN BOT LOGIC
+// MAIN MESSAGE HANDLER
 // ============================================================
 
 async function handleMessage(
@@ -2945,6 +2615,7 @@ async function handleMessage(
     bookingStates.delete(phone);
 
     return getMainMenu();
+
   }
 
   if (
@@ -2956,6 +2627,7 @@ async function handleMessage(
     bookingStates.delete(phone);
 
     return getMainMenu();
+
   }
 
   if (state) {
@@ -2965,6 +2637,7 @@ async function handleMessage(
       text,
       state
     );
+
   }
 
   if (
@@ -2976,7 +2649,8 @@ async function handleMessage(
     bookingStates.set(
       phone,
       {
-        step: "confirm_session"
+        step:
+          "confirm_session"
       }
     );
 
@@ -2995,8 +2669,11 @@ async function handleMessage(
       "Would you like to book a space for this session?\n\n" +
 
       "Reply *YES* to continue.\n" +
+
       "Reply *NO* to go back."
+
     );
+
   }
 
   if (
@@ -3007,6 +2684,7 @@ async function handleMessage(
   ) {
 
     return getAvailabilityMessage();
+
   }
 
   if (
@@ -3014,7 +2692,10 @@ async function handleMessage(
     command === "my booking"
   ) {
 
-    return getMyBooking(phone);
+    return getMyBooking(
+      phone
+    );
+
   }
 
   if (
@@ -3035,7 +2716,9 @@ async function handleMessage(
         "I don't have your details yet.\n\n" +
 
         "Please send me your full name."
+
       );
+
     }
 
     return (
@@ -3051,7 +2734,9 @@ async function handleMessage(
           ? "Paid ✅"
           : "Not paid ❌"
       }`
+
     );
+
   }
 
   if (
@@ -3061,13 +2746,14 @@ async function handleMessage(
   ) {
 
     return getRanking();
+
   }
 
   if (
     isValidFullName(text)
   ) {
 
-    const existingPlayer =
+    const existing =
       players.get(phone);
 
     const player = {
@@ -3076,10 +2762,11 @@ async function handleMessage(
         text.trim(),
 
       points:
-        existingPlayer?.points || 0,
+        existing?.points || 0,
 
       paid:
-        existingPlayer?.paid || false
+        existing?.paid || false
+
     };
 
     players.set(
@@ -3099,7 +2786,9 @@ async function handleMessage(
       "I've saved your player details.\n\n" +
 
       "Reply *menu* to see what I can do."
+
     );
+
   }
 
   return (
@@ -3107,7 +2796,9 @@ async function handleMessage(
     "🏸 I didn't understand that.\n\n" +
 
     "Reply *menu* to see what I can do."
+
   );
+
 }
 
 // ============================================================
@@ -3133,7 +2824,9 @@ function getMainMenu() {
     "5️⃣ *Rankings*\n\n" +
 
     "Reply with the number or option."
+
   );
+
 }
 
 // ============================================================
@@ -3150,7 +2843,8 @@ async function handleBookingFlow(
     text.toLowerCase().trim();
 
   if (
-    state.step === "confirm_session"
+    state.step ===
+    "confirm_session"
   ) {
 
     if (
@@ -3161,6 +2855,7 @@ async function handleBookingFlow(
       bookingStates.delete(phone);
 
       return getMainMenu();
+
     }
 
     if (
@@ -3172,20 +2867,24 @@ async function handleBookingFlow(
         "Please reply *YES* to continue " +
         "or *NO* to go back."
       );
+
     }
 
     bookingStates.set(
       phone,
       {
-        step: "choose_gender"
+        step:
+          "choose_gender"
       }
     );
 
     return getGenderSelection();
+
   }
 
   if (
-    state.step === "choose_gender"
+    state.step ===
+    "choose_gender"
   ) {
 
     let gender = null;
@@ -3199,6 +2898,7 @@ async function handleBookingFlow(
     ) {
 
       gender = "men";
+
     }
 
     if (
@@ -3210,6 +2910,7 @@ async function handleBookingFlow(
     ) {
 
       gender = "women";
+
     }
 
     if (!gender) {
@@ -3219,14 +2920,19 @@ async function handleBookingFlow(
         "I just need to know which category you're booking for.\n\n" +
 
         "1️⃣ *Men*\n" +
+
         "2️⃣ *Women*\n\n" +
 
         "Reply *1* for Men or *2* for Women."
+
       );
+
     }
 
     const available =
-      getRemainingSpaces(gender);
+      getRemainingSpaces(
+        gender
+      );
 
     if (
       available <= 0
@@ -3237,44 +2943,59 @@ async function handleBookingFlow(
         `❌ There are currently no ${gender}'s spaces available.\n\n` +
 
         "Reply *menu* to return."
+
       );
+
     }
 
     bookingStates.set(
       phone,
       {
-        step: "choose_quantity",
+
+        step:
+          "choose_quantity",
+
         gender
+
       }
     );
 
     return (
 
-      `🏸 *${capitalize(gender)}'s spaces*\n\n` +
+      `🏸 *${capitalize(
+        gender
+      )}'s spaces*\n\n` +
 
       `There are *${available}* spaces available.\n\n` +
 
       "How many spaces would you like to book?\n\n" +
 
       "1️⃣ *1 space*\n" +
+
       "2️⃣ *2 spaces*\n" +
+
       "3️⃣ *3 spaces*\n\n" +
 
       "Maximum *3 spaces* per booking.\n\n" +
 
       "Reply with *1*, *2* or *3*."
+
     );
+
   }
 
   if (
-    state.step === "choose_quantity"
+    state.step ===
+    "choose_quantity"
   ) {
 
     const quantity =
       Number(command);
 
     if (
-      !Number.isInteger(quantity) ||
+      !Number.isInteger(
+        quantity
+      ) ||
       quantity < 1 ||
       quantity > 3
     ) {
@@ -3282,6 +3003,7 @@ async function handleBookingFlow(
       return (
         "Please choose 1, 2 or 3 spaces."
       );
+
     }
 
     const available =
@@ -3296,17 +3018,25 @@ async function handleBookingFlow(
       return (
         `❌ There are only *${available}* spaces remaining.`
       );
+
     }
 
     bookingStates.set(
       phone,
       {
-        step: "collect_names",
+
+        step:
+          "collect_names",
+
         gender:
           state.gender,
+
         quantity,
+
         attendeeNames: [],
+
         currentAttendee: 1
+
       }
     );
 
@@ -3317,11 +3047,14 @@ async function handleBookingFlow(
       "Please enter the *full name* of the first attendee.\n\n" +
 
       "Example: *John Smith*"
+
     );
+
   }
 
   if (
-    state.step === "collect_names"
+    state.step ===
+    "collect_names"
   ) {
 
     if (
@@ -3329,9 +3062,13 @@ async function handleBookingFlow(
     ) {
 
       return (
+
         "Please enter the attendee's *full name*.\n\n" +
+
         "Example: *John Smith*"
+
       );
+
     }
 
     state.attendeeNames.push(
@@ -3344,7 +3081,8 @@ async function handleBookingFlow(
     ) {
 
       state.currentAttendee =
-        state.attendeeNames.length + 1;
+        state.attendeeNames.length +
+        1;
 
       bookingStates.set(
         phone,
@@ -3352,15 +3090,21 @@ async function handleBookingFlow(
       );
 
       return (
+
         `👤 *Attendee ${state.currentAttendee}*\n\n` +
+
         "Please enter the *full name*."
+
       );
+
     }
 
     bookingStates.set(
       phone,
       {
-        step: "confirm_booking",
+
+        step:
+          "confirm_booking",
 
         gender:
           state.gender,
@@ -3370,6 +3114,7 @@ async function handleBookingFlow(
 
         attendeeNames:
           state.attendeeNames
+
       }
     );
 
@@ -3378,10 +3123,12 @@ async function handleBookingFlow(
       state.quantity,
       state.attendeeNames
     );
+
   }
 
   if (
-    state.step === "confirm_booking"
+    state.step ===
+    "confirm_booking"
   ) {
 
     if (
@@ -3392,9 +3139,13 @@ async function handleBookingFlow(
       bookingStates.delete(phone);
 
       return (
+
         "❌ Booking cancelled.\n\n" +
+
         getMainMenu()
+
       );
+
     }
 
     if (
@@ -3403,9 +3154,13 @@ async function handleBookingFlow(
     ) {
 
       return (
+
         "Please reply *YES* to confirm your booking " +
+
         "or *NO* to cancel."
+
       );
+
     }
 
     const available =
@@ -3420,9 +3175,13 @@ async function handleBookingFlow(
       bookingStates.delete(phone);
 
       return (
+
         "❌ Sorry, those spaces have just been taken.\n\n" +
+
         getAvailabilityMessage()
+
       );
+
     }
 
     try {
@@ -3466,6 +3225,7 @@ async function handleBookingFlow(
 
         createdAt:
           new Date().toISOString()
+
       };
 
       bookings.set(
@@ -3477,18 +3237,20 @@ async function handleBookingFlow(
         booking
       );
 
-      bookingStates.delete(phone);
+      bookingStates.delete(
+        phone
+      );
 
       return (
 
         "💳 *Payment required*\n\n" +
 
         `Amount: *£${
-          state.quantity *
-          badmintonSession.pricePerSpace
+          booking.amount
         }*\n\n` +
 
         "Click the secure Square payment link below " +
+
         "to complete your booking:\n\n" +
 
         paymentLink.url +
@@ -3496,6 +3258,7 @@ async function handleBookingFlow(
         "\n\n" +
 
         "⚠️ Your booking is only confirmed once Square confirms your payment."
+
       );
 
     } catch (error) {
@@ -3506,16 +3269,25 @@ async function handleBookingFlow(
       );
 
       return (
+
         "❌ Sorry, I couldn't create the payment link.\n\n" +
+
         "Please try again in a moment."
+
       );
+
     }
+
   }
 
   return (
+
     "🏸 Something went wrong.\n\n" +
+
     "Reply *menu* to start again."
+
   );
+
 }
 
 // ============================================================
@@ -3525,23 +3297,29 @@ async function handleBookingFlow(
 function getGenderSelection() {
 
   const menSpaces =
-    getRemainingSpaces("men");
+    getRemainingSpaces(
+      "men"
+    );
 
   const womenSpaces =
-    getRemainingSpaces("women");
+    getRemainingSpaces(
+      "women"
+    );
 
   return (
 
     "🏸 *Choose your category*\n\n" +
 
-    "Please choose the category you are booking for:\n\n" +
+    "Please choose the category you're booking for:\n\n" +
 
     `1️⃣ *Men* — ${menSpaces} spaces available\n` +
 
     `2️⃣ *Women* — ${womenSpaces} spaces available\n\n` +
 
     "Reply *1* for Men or *2* for Women."
+
   );
+
 }
 
 // ============================================================
@@ -3576,7 +3354,9 @@ function getBookingConfirmation(
 
     `📍 ${badmintonSession.venue}\n\n` +
 
-    `👥 Category: ${capitalize(gender)}\n` +
+    `👥 Category: ${capitalize(
+      gender
+    )}\n` +
 
     `🎟️ Spaces: ${quantity}\n\n` +
 
@@ -3591,8 +3371,11 @@ function getBookingConfirmation(
     "Is everything correct?\n\n" +
 
     "Reply *YES* to continue to payment.\n" +
+
     "Reply *NO* to cancel."
+
   );
+
 }
 
 // ============================================================
@@ -3607,24 +3390,25 @@ async function createSquarePaymentLink(
 ) {
 
   if (!SQUARE_ACCESS_TOKEN) {
+
     throw new Error(
       "SQUARE_ACCESS_TOKEN is missing."
     );
+
   }
 
   if (!SQUARE_LOCATION_ID) {
+
     throw new Error(
       "SQUARE_LOCATION_ID is missing."
     );
+
   }
 
   const totalAmount =
     quantity *
     badmintonSession.pricePerSpace *
     100;
-
-  const idempotencyKey =
-    crypto.randomUUID();
 
   const attendeeText =
     attendeeNames.join(", ");
@@ -3639,7 +3423,7 @@ async function createSquarePaymentLink(
   const requestBody = {
 
     idempotency_key:
-      idempotencyKey,
+      crypto.randomUUID(),
 
     quick_pay: {
 
@@ -3657,10 +3441,12 @@ async function createSquarePaymentLink(
 
         currency:
           "GBP"
+
       },
 
       location_id:
         SQUARE_LOCATION_ID
+
     },
 
     description:
@@ -3673,7 +3459,9 @@ async function createSquarePaymentLink(
 
       redirect_url:
         `${BASE_URL}/payment-success`
+
     }
+
   };
 
   const response =
@@ -3681,7 +3469,8 @@ async function createSquarePaymentLink(
       `${SQUARE_API_BASE}/v2/online-checkout/payment-links`,
       {
 
-        method: "POST",
+        method:
+          "POST",
 
         headers: {
 
@@ -3693,12 +3482,14 @@ async function createSquarePaymentLink(
 
           "Square-Version":
             "2026-08-19"
+
         },
 
         body:
           JSON.stringify(
             requestBody
           )
+
       }
     );
 
@@ -3716,6 +3507,7 @@ async function createSquarePaymentLink(
       data?.errors?.[0]?.detail ||
       "Square payment link creation failed."
     );
+
   }
 
   if (
@@ -3725,6 +3517,7 @@ async function createSquarePaymentLink(
     throw new Error(
       "Square did not return a payment link."
     );
+
   }
 
   console.log(
@@ -3742,7 +3535,9 @@ async function createSquarePaymentLink(
 
     orderId:
       data.payment_link.order_id
+
   };
+
 }
 
 // ============================================================
@@ -3761,24 +3556,27 @@ async function handleSquarePaymentUpdated(
   if (!payment) {
 
     console.log(
-      "⚠️ Square webhook contained no payment."
+      "⚠️ No payment in Square webhook."
     );
 
     return;
+
   }
 
   console.log(
-    `💳 Square payment ${payment.id} status: ${payment.status}`
+    `💳 Payment ${payment.id}: ${payment.status}`
   );
 
   console.log(
-    `📦 Square order ID: ${
-      payment.order_id || "none"
+    `📦 Order: ${
+      payment.order_id ||
+      "none"
     }`
   );
 
   if (
-    payment.status !== "COMPLETED"
+    payment.status !==
+    "COMPLETED"
   ) {
 
     console.log(
@@ -3786,6 +3584,7 @@ async function handleSquarePaymentUpdated(
     );
 
     return;
+
   }
 
   const orderId =
@@ -3798,6 +3597,7 @@ async function handleSquarePaymentUpdated(
     );
 
     return;
+
   }
 
   let bookingPhone = null;
@@ -3807,12 +3607,15 @@ async function handleSquarePaymentUpdated(
     const [
       phone,
       existingBooking
-    ] of bookings.entries()
+    ]
+    of bookings.entries()
   ) {
 
     if (
-      existingBooking.status === "pending" &&
-      existingBooking.squareOrderId === orderId
+      existingBooking.status ===
+      "pending" &&
+      existingBooking.squareOrderId ===
+      orderId
     ) {
 
       bookingPhone =
@@ -3822,32 +3625,32 @@ async function handleSquarePaymentUpdated(
         existingBooking;
 
       break;
+
     }
+
   }
 
   if (!booking) {
 
     console.log(
-      `ℹ️ No pending booking found for order ${orderId}.`
+      `ℹ️ No pending booking found for ${orderId}.`
     );
 
     return;
+
   }
 
-  /*
-   * If the webhook is received twice, don't send the
-   * confirmation twice.
-   */
-
   if (
-    booking.status === "paid"
+    booking.status ===
+    "paid"
   ) {
 
     console.log(
-      "ℹ️ Booking already marked paid."
+      "ℹ️ Booking already paid."
     );
 
     return;
+
   }
 
   const available =
@@ -3856,7 +3659,8 @@ async function handleSquarePaymentUpdated(
     );
 
   if (
-    booking.quantity > available
+    booking.quantity >
+    available
   ) {
 
     console.error(
@@ -3870,12 +3674,15 @@ async function handleSquarePaymentUpdated(
       "⚠️ *Payment received*\n\n" +
 
       "Your payment was successfully received, " +
+
       "but unfortunately the requested spaces are no longer available.\n\n" +
 
       "Please contact the organiser regarding your payment."
+
     );
 
     return;
+
   }
 
   booking.status =
@@ -3895,10 +3702,6 @@ async function handleSquarePaymentUpdated(
     booking
   );
 
-  /*
-   * Persist booking before sending confirmation.
-   */
-
   await saveBooking(
     booking
   );
@@ -3908,7 +3711,7 @@ async function handleSquarePaymentUpdated(
   );
 
   const firstAttendee =
-    booking.attendeeNames[0] ||
+    booking.attendeeNames?.[0] ||
     "Player";
 
   const existingPlayer =
@@ -3916,7 +3719,7 @@ async function handleSquarePaymentUpdated(
       bookingPhone
     );
 
-  const updatedPlayer = {
+  const player = {
 
     name:
       existingPlayer?.name ||
@@ -3928,16 +3731,17 @@ async function handleSquarePaymentUpdated(
 
     paid:
       true
+
   };
 
   players.set(
     bookingPhone,
-    updatedPlayer
+    player
   );
 
   await saveCustomer(
     bookingPhone,
-    updatedPlayer
+    player
   );
 
   const names =
@@ -3955,6 +3759,7 @@ async function handleSquarePaymentUpdated(
     "✅ *Booking Confirmed!*\n\n" +
 
     "Your payment has been received and " +
+
     "your badminton spaces are confirmed.\n\n" +
 
     `📅 ${badmintonSession.date}\n` +
@@ -3978,15 +3783,17 @@ async function handleSquarePaymentUpdated(
     `💷 Paid: *£${booking.amount}*\n\n` +
 
     "See you on court! 🏸"
+
   );
 
   console.log(
     `✅ BOOKING CONFIRMED for ${bookingPhone}`
   );
+
 }
 
 // ============================================================
-// SQUARE SIGNATURE VERIFICATION
+// SQUARE SIGNATURE
 // ============================================================
 
 function verifySquareWebhookSignature(
@@ -4002,7 +3809,7 @@ function verifySquareWebhookSignature(
       notificationUrl +
       rawBody;
 
-    const expectedSignature =
+    const expected =
       crypto
         .createHmac(
           "sha256",
@@ -4016,7 +3823,7 @@ function verifySquareWebhookSignature(
 
     const expectedBuffer =
       Buffer.from(
-        expectedSignature
+        expected
       );
 
     const receivedBuffer =
@@ -4030,6 +3837,7 @@ function verifySquareWebhookSignature(
     ) {
 
       return false;
+
     }
 
     return crypto.timingSafeEqual(
@@ -4040,12 +3848,14 @@ function verifySquareWebhookSignature(
   } catch (error) {
 
     console.error(
-      "❌ Square signature verification error:",
+      "❌ Signature verification error:",
       error
     );
 
     return false;
+
   }
+
 }
 
 // ============================================================
@@ -4055,10 +3865,14 @@ function verifySquareWebhookSignature(
 function getAvailabilityMessage() {
 
   const menSpaces =
-    getRemainingSpaces("men");
+    getRemainingSpaces(
+      "men"
+    );
 
   const womenSpaces =
-    getRemainingSpaces("women");
+    getRemainingSpaces(
+      "women"
+    );
 
   return (
 
@@ -4073,7 +3887,9 @@ function getAvailabilityMessage() {
     `👨 Men's spaces: *${menSpaces} available*\n` +
 
     `👩 Women's spaces: *${womenSpaces} available*`
+
   );
+
 }
 
 // ============================================================
@@ -4105,13 +3921,16 @@ function getRemainingSpaces(
         Number(
           booking.quantity
         ) || 0;
+
     }
+
   }
 
   return Math.max(
     0,
     capacity - booked
   );
+
 }
 
 // ============================================================
@@ -4134,11 +3953,16 @@ function getMyBooking(
       "You don't currently have a booking.\n\n" +
 
       "Reply *1* to book a space."
+
     );
+
   }
 
   const names =
-    (booking.attendeeNames || [])
+    (
+      booking.attendeeNames ||
+      []
+    )
       .map(
         (name, index) =>
           `${index + 1}. ${name}`
@@ -4146,7 +3970,8 @@ function getMyBooking(
       .join("\n");
 
   if (
-    booking.status === "pending"
+    booking.status ===
+    "pending"
   ) {
 
     return (
@@ -4174,7 +3999,9 @@ function getMyBooking(
       `💷 Amount due: *£${booking.amount}*\n\n` +
 
       "Your payment has not yet been confirmed."
+
     );
+
   }
 
   return (
@@ -4202,7 +4029,9 @@ function getMyBooking(
     "\n\n" +
 
     `💷 Paid: *£${booking.amount}*`
+
   );
+
 }
 
 // ============================================================
@@ -4227,10 +4056,12 @@ function isValidFullName(
   ) {
 
     return false;
+
   }
 
   return /^[a-zA-ZÀ-ÿ'’\- ]{2,100}$/
     .test(cleaned);
+
 }
 
 // ============================================================
@@ -4246,16 +4077,20 @@ function getRanking() {
           (b.points || 0) -
           (a.points || 0)
       )
-      .slice(0, 10);
+      .slice(
+        0,
+        10
+      );
 
   if (
-    ranked.length === 0
+    !ranked.length
   ) {
 
     return (
       "🏆 No players have been added " +
       "to the ranking yet."
     );
+
   }
 
   return (
@@ -4270,7 +4105,9 @@ function getRanking() {
           } pts`
       )
       .join("\n")
+
   );
+
 }
 
 // ============================================================
@@ -4289,6 +4126,7 @@ function capitalize(
     text.charAt(0).toUpperCase() +
     text.slice(1)
   );
+
 }
 
 // ============================================================
@@ -4322,10 +4160,11 @@ function escapeHtml(
       /'/g,
       "&#039;"
     );
+
 }
 
 // ============================================================
-// SEND WHATSAPP MESSAGE
+// WHATSAPP MESSAGE
 // ============================================================
 
 async function sendWhatsAppMessage(
@@ -4343,6 +4182,7 @@ async function sendWhatsAppMessage(
     );
 
     return;
+
   }
 
   const url =
@@ -4358,15 +4198,15 @@ async function sendWhatsAppMessage(
           method:
             "POST",
 
-          headers:
-            {
+          headers: {
 
-              Authorization:
-                `Bearer ${WHATSAPP_TOKEN}`,
+            Authorization:
+              `Bearer ${WHATSAPP_TOKEN}`,
 
-              "Content-Type":
-                "application/json"
-            },
+            "Content-Type":
+              "application/json"
+
+          },
 
           body:
             JSON.stringify({
@@ -4379,12 +4219,13 @@ async function sendWhatsAppMessage(
               type:
                 "text",
 
-              text:
-                {
-                  body:
-                    message
-                }
+              text: {
+                body:
+                  message
+              }
+
             })
+
         }
       );
 
@@ -4399,6 +4240,7 @@ async function sendWhatsAppMessage(
       );
 
       return;
+
     }
 
     console.log(
@@ -4411,7 +4253,9 @@ async function sendWhatsAppMessage(
       "❌ WhatsApp send error:",
       error
     );
+
   }
+
 }
 
 // ============================================================
@@ -4450,7 +4294,11 @@ app.listen(
     );
 
     console.log(
-      `💳 Square environment: ${SQUARE_ENVIRONMENT}`
+      `🎟️ Total: ${badmintonSession.totalCapacity}`
+    );
+
+    console.log(
+      `💳 Square: ${SQUARE_ENVIRONMENT}`
     );
 
     console.log(
@@ -4462,27 +4310,13 @@ app.listen(
     );
 
     console.log(
-      `🔐 Admin dashboard: ${
+      `🔐 Admin: ${
         ADMIN_PASSWORD
           ? "configured"
           : "NOT CONFIGURED"
       }`
+
     );
 
-    if (
-      SQUARE_ACCESS_TOKEN &&
-      SQUARE_LOCATION_ID
-    ) {
-
-      console.log(
-        "✅ Square credentials detected"
-      );
-
-    } else {
-
-      console.log(
-        "⚠️ Square credentials are NOT fully configured"
-      );
-    }
   }
 );
