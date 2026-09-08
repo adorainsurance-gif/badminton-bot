@@ -17,18 +17,28 @@ const PHONE_NUMBER_ID = process.env.PHONE_NUMBER_ID;
 
 const SQUARE_ACCESS_TOKEN = process.env.SQUARE_ACCESS_TOKEN;
 const SQUARE_LOCATION_ID = process.env.SQUARE_LOCATION_ID;
-
 const SQUARE_ENVIRONMENT =
   process.env.SQUARE_ENVIRONMENT || "sandbox";
 
 const SQUARE_WEBHOOK_SIGNATURE_KEY =
   process.env.SQUARE_WEBHOOK_SIGNATURE_KEY;
 
-const BASE_URL = process.env.BASE_URL;
-const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD;
+const BASE_URL =
+  process.env.BASE_URL ||
+  "https://badminton-bot-bjza.onrender.com";
 
-const SUPABASE_URL = process.env.SUPABASE_URL;
-const SUPABASE_SECRET_KEY = process.env.SUPABASE_SECRET_KEY;
+const ADMIN_PASSWORD =
+  process.env.ADMIN_PASSWORD;
+
+const SUPABASE_URL =
+  process.env.SUPABASE_URL;
+
+const SUPABASE_SECRET_KEY =
+  process.env.SUPABASE_SECRET_KEY;
+
+// ============================================================
+// SQUARE API
+// ============================================================
 
 const SQUARE_API_BASE =
   SQUARE_ENVIRONMENT.toLowerCase() === "production"
@@ -36,67 +46,89 @@ const SQUARE_API_BASE =
     : "https://connect.squareupsandbox.com";
 
 // ============================================================
-// SUPABASE
+// LOCAL CACHE
 // ============================================================
 
-const SUPABASE_HEADERS = {
-  apikey: SUPABASE_SECRET_KEY || "",
-  Authorization: `Bearer ${SUPABASE_SECRET_KEY || ""}`,
-  "Content-Type": "application/json"
+let badmintonSession = {
+  id: null,
+  sessionDate: "Saturday 12 September",
+  startTime: "7:00 PM",
+  endTime: "9:00 PM",
+  venue: "Peckham Sports Centre",
+  totalCapacity: 24,
+  menCapacity: 12,
+  womenCapacity: 12,
+  pricePerSpace: 8
 };
+
+const players = new Map();
+const bookings = new Map();
+const bookingStates = new Map();
+const processedSquareEvents = new Set();
+
+// ============================================================
+// SUPABASE REQUEST HELPER
+// ============================================================
 
 async function supabaseRequest(
   table,
   method = "GET",
   query = "",
-  body = null,
-  prefer = ""
+  body = null
 ) {
   if (!SUPABASE_URL || !SUPABASE_SECRET_KEY) {
-    throw new Error("Supabase credentials are missing.");
+    throw new Error(
+      "SUPABASE_URL or SUPABASE_SECRET_KEY is missing."
+    );
   }
 
-  const headers = {
-    ...SUPABASE_HEADERS
+  const url =
+    `${SUPABASE_URL}/rest/v1/${table}${query}`;
+
+  const options = {
+    method,
+    headers: {
+      apikey: SUPABASE_SECRET_KEY,
+      Authorization:
+        `Bearer ${SUPABASE_SECRET_KEY}`,
+      "Content-Type": "application/json",
+      Prefer:
+        method === "POST"
+          ? "return=representation"
+          : "return=representation"
+    }
   };
 
-  if (prefer) {
-    headers.Prefer = prefer;
+  if (body !== null) {
+    options.body = JSON.stringify(body);
   }
 
-  const response = await fetch(
-    `${SUPABASE_URL}/rest/v1/${table}${query}`,
-    {
-      method,
-      headers,
-      body:
-        body === null
-          ? undefined
-          : JSON.stringify(body)
-    }
-  );
+  const response =
+    await fetch(url, options);
 
-  const text = await response.text();
+  const text =
+    await response.text();
 
-  let data;
+  let data = null;
 
   try {
-    data = text ? JSON.parse(text) : null;
+    data = text
+      ? JSON.parse(text)
+      : null;
   } catch {
     data = text;
   }
 
   if (!response.ok) {
     console.error(
-      `❌ Supabase ${table} ${method} error:`,
+      `❌ Supabase ${table} error:`,
       data
     );
 
     throw new Error(
       data?.message ||
-      data?.hint ||
-      data?.details ||
-      `Supabase error ${response.status}`
+      data?.error_description ||
+      `Supabase request failed: ${response.status}`
     );
   }
 
@@ -104,172 +136,93 @@ async function supabaseRequest(
 }
 
 // ============================================================
-// SESSION
-// ============================================================
-
-const badmintonSession = {
-
-  id: null,
-
-  date: "Saturday 12 September",
-
-  startTime: "7:00 PM",
-
-  endTime: "9:00 PM",
-
-  venue: "Peckham Sports Centre",
-
-  totalCapacity: 24,
-
-  menCapacity: 12,
-
-  womenCapacity: 12,
-
-  pricePerSpace: 8
-
-};
-
-// ============================================================
-// TEMPORARY BOT STATE
-// ============================================================
-
-const bookingStates = new Map();
-
-const processedSquareEvents = new Set();
-
-// ============================================================
-// IN-MEMORY CACHE
-// ============================================================
-
-const players = new Map();
-
-const bookings = new Map();
-
-let databaseLoaded = false;
-
-let databaseLoading = null;
-
-// ============================================================
-// LOAD SESSION
+// LOAD SESSION FROM SUPABASE
 // ============================================================
 
 async function loadSession() {
-
   try {
-
     const rows =
       await supabaseRequest(
         "sessions",
         "GET",
-        "?select=*&order=id.asc&limit=1"
+        "?select=*&order=id.desc&limit=1"
       );
 
-    if (!rows || !rows.length) {
+    if (
+      Array.isArray(rows) &&
+      rows.length > 0
+    ) {
+      const row = rows[0];
+
+      badmintonSession = {
+        id: row.id,
+
+        // IMPORTANT:
+        // Supabase column is session_date.
+        // NEVER use a "date" column here.
+        sessionDate:
+          row.session_date ||
+          "Saturday 12 September",
+
+        startTime:
+          row.start_time ||
+          "7:00 PM",
+
+        endTime:
+          row.end_time ||
+          "9:00 PM",
+
+        venue:
+          row.venue ||
+          "Peckham Sports Centre",
+
+        totalCapacity:
+          Number(row.total_capacity) || 24,
+
+        menCapacity:
+          Number(row.men_capacity) || 12,
+
+        womenCapacity:
+          Number(row.women_capacity) || 12,
+
+        pricePerSpace:
+          Number(row.price_per_space) || 8
+      };
 
       console.log(
-        "ℹ️ No session found in Supabase."
+        "✅ Session loaded from Supabase"
       );
 
-      return;
+      console.log(
+        badmintonSession
+      );
+    } else {
+      console.log(
+        "ℹ️ No session found. Creating default session."
+      );
+
+      await createInitialSession();
     }
-
-    const row = rows[0];
-
-    badmintonSession.id =
-      row.id;
-
-    /*
-     * IMPORTANT:
-     * Your sessions table uses session_date,
-     * not date.
-     */
-
-    badmintonSession.date =
-      row.session_date ||
-      badmintonSession.date;
-
-    badmintonSession.startTime =
-      row.start_time ||
-      badmintonSession.startTime;
-
-    badmintonSession.endTime =
-      row.end_time ||
-      badmintonSession.endTime;
-
-    badmintonSession.venue =
-      row.venue ||
-      badmintonSession.venue;
-
-    badmintonSession.pricePerSpace =
-      Number(
-        row.price_per_space ??
-        badmintonSession.pricePerSpace
-      );
-
-    badmintonSession.menCapacity =
-      Number(
-        row.men_capacity ??
-        badmintonSession.menCapacity
-      );
-
-    badmintonSession.womenCapacity =
-      Number(
-        row.women_capacity ??
-        badmintonSession.womenCapacity
-      );
-
-    badmintonSession.totalCapacity =
-      Number(
-        row.total_capacity ??
-        (
-          badmintonSession.menCapacity +
-          badmintonSession.womenCapacity
-        )
-      );
+  } catch (error) {
+    console.error(
+      "❌ Supabase sessions error:",
+      error
+    );
 
     console.log(
-      "✅ Session loaded from Supabase"
+      "⚠️ Using local default session."
     );
-
-  } catch (error) {
-
-    console.error(
-      "❌ Could not load session:",
-      error.message
-    );
-
   }
-
 }
 
 // ============================================================
-// SAVE SESSION
+// CREATE INITIAL SESSION
 // ============================================================
 
-async function saveSession() {
-
-  if (!badmintonSession.id) {
-
-    const existing =
-      await supabaseRequest(
-        "sessions",
-        "GET",
-        "?select=id&order=id.asc&limit=1"
-      );
-
-    if (existing?.length) {
-
-      badmintonSession.id =
-        existing[0].id;
-
-    }
-
-  }
-
-  const sessionData = {
-
+async function createInitialSession() {
+  const row = {
     session_date:
-      badmintonSession.date,
+      badmintonSession.sessionDate,
 
     start_time:
       badmintonSession.startTime,
@@ -280,8 +233,8 @@ async function saveSession() {
     venue:
       badmintonSession.venue,
 
-    price_per_space:
-      badmintonSession.pricePerSpace,
+    total_capacity:
+      badmintonSession.totalCapacity,
 
     men_capacity:
       badmintonSession.menCapacity,
@@ -289,47 +242,178 @@ async function saveSession() {
     women_capacity:
       badmintonSession.womenCapacity,
 
-    total_capacity:
-      badmintonSession.totalCapacity
-
+    price_per_space:
+      badmintonSession.pricePerSpace
   };
 
-  if (badmintonSession.id) {
-
+  const result =
     await supabaseRequest(
       "sessions",
-      "PATCH",
-      `?id=eq.${encodeURIComponent(
-        badmintonSession.id
-      )}`,
-      sessionData,
-      "return=minimal"
+      "POST",
+      "",
+      row
     );
 
-  } else {
-
-    const result =
-      await supabaseRequest(
-        "sessions",
-        "POST",
-        "",
-        sessionData,
-        "return=representation"
-      );
-
-    if (result?.[0]) {
-
-      badmintonSession.id =
-        result[0].id;
-
-    }
-
+  if (
+    Array.isArray(result) &&
+    result.length > 0
+  ) {
+    badmintonSession.id =
+      result[0].id;
   }
 
   console.log(
-    "✅ Session saved to Supabase"
+    "✅ Initial session created"
   );
+}
 
+// ============================================================
+// SAVE SESSION
+// ============================================================
+
+async function saveSession() {
+  const row = {
+    session_date:
+      badmintonSession.sessionDate,
+
+    start_time:
+      badmintonSession.startTime,
+
+    end_time:
+      badmintonSession.endTime,
+
+    venue:
+      badmintonSession.venue,
+
+    total_capacity:
+      Number(badmintonSession.totalCapacity),
+
+    men_capacity:
+      Number(badmintonSession.menCapacity),
+
+    women_capacity:
+      Number(badmintonSession.womenCapacity),
+
+    price_per_space:
+      Number(badmintonSession.pricePerSpace)
+  };
+
+  try {
+    if (badmintonSession.id) {
+      await supabaseRequest(
+        "sessions",
+        "PATCH",
+        `?id=eq.${encodeURIComponent(
+          badmintonSession.id
+        )}`,
+        row
+      );
+    } else {
+      const result =
+        await supabaseRequest(
+          "sessions",
+          "POST",
+          "",
+          row
+        );
+
+      if (
+        Array.isArray(result) &&
+        result.length > 0
+      ) {
+        badmintonSession.id =
+          result[0].id;
+      }
+    }
+
+    console.log(
+      "✅ Session saved to Supabase"
+    );
+  } catch (error) {
+    console.error(
+      "❌ Admin session update failed:",
+      error
+    );
+
+    throw error;
+  }
+}
+
+// ============================================================
+// LOAD BOOKINGS
+// ============================================================
+
+async function loadBookings() {
+  try {
+    const rows =
+      await supabaseRequest(
+        "bookings",
+        "GET",
+        "?select=*&order=created_at.desc"
+      );
+
+    bookings.clear();
+
+    if (Array.isArray(rows)) {
+      for (const row of rows) {
+        bookings.set(
+          row.phone,
+          {
+            id: row.id,
+            status:
+              row.status || "pending",
+
+            phone:
+              row.phone,
+
+            gender:
+              row.gender,
+
+            quantity:
+              Number(row.quantity) || 0,
+
+            attendeeNames:
+              Array.isArray(row.attendee_names)
+                ? row.attendee_names
+                : [],
+
+            amount:
+              Number(row.amount) || 0,
+
+            squarePaymentLink:
+              row.square_payment_link,
+
+            squarePaymentLinkId:
+              row.square_payment_link_id,
+
+            squareOrderId:
+              row.square_order_id,
+
+            squarePaymentId:
+              row.square_payment_id,
+
+            paymentStatus:
+              row.payment_status,
+
+            createdAt:
+              row.created_at,
+
+            paidAt:
+              row.paid_at
+          }
+        );
+      }
+    }
+
+    console.log(
+      `✅ ${bookings.size} bookings loaded`
+    );
+  } catch (error) {
+    console.error(
+      "❌ Could not load bookings:",
+      error
+    );
+  }
 }
 
 // ============================================================
@@ -337,9 +421,7 @@ async function saveSession() {
 // ============================================================
 
 async function loadCustomers() {
-
   try {
-
     const rows =
       await supabaseRequest(
         "customers",
@@ -349,59 +431,37 @@ async function loadCustomers() {
 
     players.clear();
 
-    for (const row of rows || []) {
+    if (Array.isArray(rows)) {
+      for (const row of rows) {
+        players.set(
+          row.phone,
+          {
+            id: row.id,
+            name:
+              row.name || "",
 
-      const phone =
-        row.phone ||
-        row.whatsapp ||
-        row.whatsapp_number ||
-        row.phone_number;
+            points:
+              Number(row.points) || 0,
 
-      if (!phone) {
-        continue;
+            paid:
+              row.paid === true,
+
+            paymentStatus:
+              row.payment_status
+          }
+        );
       }
-
-      players.set(
-        String(phone),
-        {
-
-          id:
-            row.id,
-
-          name:
-            row.name ||
-            row.full_name ||
-            "Unknown",
-
-          points:
-            Number(
-              row.points ||
-              row.ranking_points ||
-              0
-            ),
-
-          paid:
-            row.paid === true ||
-            row.payment_status === "PAID"
-
-        }
-      );
-
     }
 
     console.log(
-      `✅ Loaded ${players.size} customers`
+      `✅ ${players.size} customers loaded`
     );
-
   } catch (error) {
-
     console.error(
       "❌ Could not load customers:",
-      error.message
+      error
     );
-
   }
-
 }
 
 // ============================================================
@@ -410,249 +470,94 @@ async function loadCustomers() {
 
 async function saveCustomer(
   phone,
-  player
+  name,
+  paid = false
 ) {
-
   try {
+    const existing =
+      players.get(phone);
 
-    let existing = [];
-
-    /*
-     * Search using the phone column used by the
-     * main customer structure.
-     */
-
-    existing =
-      await supabaseRequest(
-        "customers",
-        "GET",
-        `?select=*&phone=eq.${encodeURIComponent(
-          phone
-        )}&limit=1`
-      );
-
-    const customerData = {
-
-      name:
-        player.name,
-
-      phone:
-        phone,
-
+    const row = {
+      phone,
+      name,
       points:
-        Number(player.points || 0),
-
-      paid:
-        Boolean(player.paid),
-
+        existing?.points || 0,
+      paid,
       payment_status:
-        player.paid
-          ? "PAID"
-          : "NOT PAID"
-
+        paid
+          ? "COMPLETED"
+          : "PENDING"
     };
 
-    if (existing?.length) {
-
-      await supabaseRequest(
-        "customers",
-        "PATCH",
-        `?id=eq.${encodeURIComponent(
-          existing[0].id
-        )}`,
-        customerData,
-        "return=minimal"
-      );
-
-    } else {
-
+    const result =
       await supabaseRequest(
         "customers",
         "POST",
         "",
-        customerData,
-        "return=minimal"
+        row
       );
 
-    }
-
-  } catch (error) {
-
-    console.error(
-      "⚠️ Could not save customer:",
-      error.message
-    );
-
-  }
-
-}
-
-// ============================================================
-// LOAD BOOKINGS
-// ============================================================
-
-async function loadBookings() {
-
-  try {
-
-    const rows =
-      await supabaseRequest(
-        "bookings",
-        "GET",
-        "?select=*&order=id.asc"
-      );
-
-    bookings.clear();
-
-    for (const row of rows || []) {
-
-      const phone =
-        row.phone ||
-        row.whatsapp ||
-        row.whatsapp_number ||
-        row.phone_number;
-
-      if (!phone) {
-        continue;
-      }
-
-      let attendeeNames =
-        row.attendee_names ||
-        row.attendeeNames ||
-        row.names ||
-        [];
-
-      if (
-        typeof attendeeNames ===
-        "string"
-      ) {
-
-        try {
-
-          attendeeNames =
-            JSON.parse(
-              attendeeNames
-            );
-
-        } catch {
-
-          attendeeNames =
-            attendeeNames
-              .split(",")
-              .map(
-                name =>
-                  name.trim()
-              )
-              .filter(Boolean);
-
+    if (
+      Array.isArray(result) &&
+      result.length > 0
+    ) {
+      players.set(
+        phone,
+        {
+          id: result[0].id,
+          name,
+          points:
+            existing?.points || 0,
+          paid,
+          paymentStatus:
+            paid
+              ? "COMPLETED"
+              : "PENDING"
         }
-
-      }
-
-      if (
-        !Array.isArray(
-          attendeeNames
-        )
-      ) {
-
-        attendeeNames = [];
-
-      }
-
-      const booking = {
-
-        id:
-          row.id,
-
-        phone:
-          String(phone),
-
-        gender:
-          String(
-            row.gender ||
-            row.category ||
-            ""
-          ).toLowerCase(),
-
-        quantity:
-          Number(
-            row.quantity ||
-            row.spaces ||
-            0
-          ),
-
-        attendeeNames,
-
-        status:
-          String(
-            row.status ||
-            "pending"
-          ).toLowerCase(),
-
-        amount:
-          Number(
-            row.amount ||
-            row.total_amount ||
-            row.price ||
-            0
-          ),
-
-        squarePaymentLink:
-          row.square_payment_link ||
-          row.payment_link ||
-          "",
-
-        squarePaymentLinkId:
-          row.square_payment_link_id ||
-          row.payment_link_id ||
-          "",
-
-        squareOrderId:
-          row.square_order_id ||
-          row.order_id ||
-          "",
-
-        squarePaymentId:
-          row.square_payment_id ||
-          row.payment_id ||
-          "",
-
-        paymentStatus:
-          row.payment_status ||
-          "",
-
-        createdAt:
-          row.created_at ||
-          row.createdAt ||
-          null,
-
-        paidAt:
-          row.paid_at ||
-          row.paidAt ||
-          null
-
-      };
-
-      bookings.set(
-        String(phone),
-        booking
+      );
+    }
+  } catch (error) {
+    // If phone is unique and already exists,
+    // update instead.
+    try {
+      await supabaseRequest(
+        "customers",
+        "PATCH",
+        `?phone=eq.${encodeURIComponent(
+          phone
+        )}`,
+        {
+          name,
+          paid,
+          payment_status:
+            paid
+              ? "COMPLETED"
+              : "PENDING"
+        }
       );
 
+      const existing =
+        players.get(phone);
+
+      players.set(
+        phone,
+        {
+          ...existing,
+          name,
+          paid,
+          paymentStatus:
+            paid
+              ? "COMPLETED"
+              : "PENDING"
+        }
+      );
+    } catch (updateError) {
+      console.error(
+        "❌ Customer save failed:",
+        updateError
+      );
     }
-
-    console.log(
-      `✅ Loaded ${bookings.size} bookings`
-    );
-
-  } catch (error) {
-
-    console.error(
-      "❌ Could not load bookings:",
-      error.message
-    );
-
   }
-
 }
 
 // ============================================================
@@ -660,14 +565,11 @@ async function loadBookings() {
 // ============================================================
 
 async function saveBooking(
+  phone,
   booking
 ) {
-
-  const bookingData = {
-
-    phone:
-      booking.phone,
-
+  const row = {
+    phone,
     gender:
       booking.gender,
 
@@ -678,88 +580,74 @@ async function saveBooking(
       booking.status,
 
     attendee_names:
-      JSON.stringify(
-        booking.attendeeNames || []
-      ),
+      booking.attendeeNames,
 
     amount:
       booking.amount,
 
     square_payment_link:
-      booking.squarePaymentLink ||
-      null,
+      booking.squarePaymentLink || null,
 
     square_payment_link_id:
-      booking.squarePaymentLinkId ||
-      null,
+      booking.squarePaymentLinkId || null,
 
     square_order_id:
-      booking.squareOrderId ||
-      null,
+      booking.squareOrderId || null,
 
     square_payment_id:
-      booking.squarePaymentId ||
-      null,
+      booking.squarePaymentId || null,
 
     payment_status:
-      booking.paymentStatus ||
-      null,
+      booking.paymentStatus || null,
 
     created_at:
       booking.createdAt ||
       new Date().toISOString(),
 
     paid_at:
-      booking.paidAt ||
-      null
-
+      booking.paidAt || null
   };
 
   try {
-
     if (booking.id) {
-
       await supabaseRequest(
         "bookings",
         "PATCH",
         `?id=eq.${encodeURIComponent(
           booking.id
         )}`,
-        bookingData,
-        "return=minimal"
+        row
       );
+    } else {
+      const result =
+        await supabaseRequest(
+          "bookings",
+          "POST",
+          "",
+          row
+        );
 
-      return;
-
+      if (
+        Array.isArray(result) &&
+        result.length > 0
+      ) {
+        booking.id =
+          result[0].id;
+      }
     }
 
-    const result =
-      await supabaseRequest(
-        "bookings",
-        "POST",
-        "",
-        bookingData,
-        "return=representation"
-      );
-
-    if (result?.[0]) {
-
-      booking.id =
-        result[0].id;
-
-    }
-
+    bookings.set(
+      phone,
+      booking
+    );
   } catch (error) {
-
     console.error(
-      "❌ Could not save booking:",
-      error.message
+      "❌ Booking save failed:",
+      error
     );
 
     throw error;
-
   }
-
 }
 
 // ============================================================
@@ -767,99 +655,42 @@ async function saveBooking(
 // ============================================================
 
 async function saveAttendees(
-  booking
+  bookingId,
+  phone,
+  gender,
+  attendeeNames
 ) {
-
-  if (
-    !booking.attendeeNames?.length
-  ) {
+  if (!bookingId) {
     return;
   }
 
-  for (
-    const name
-    of booking.attendeeNames
-  ) {
-
-    try {
-
-      const attendeeData = {
-
-        name,
-
-        phone:
-          booking.phone,
-
-        gender:
-          booking.gender,
-
-        booking_id:
-          booking.id
-
-      };
-
+  try {
+    for (
+      const name of attendeeNames
+    ) {
       await supabaseRequest(
         "attendees",
         "POST",
         "",
-        attendeeData,
-        "return=minimal"
+        {
+          name,
+          phone,
+          gender,
+          booking_id:
+            bookingId
+        }
       );
-
-    } catch (error) {
-
-      console.error(
-        `⚠️ Could not save attendee ${name}:`,
-        error.message
-      );
-
     }
 
+    console.log(
+      "✅ Attendees saved"
+    );
+  } catch (error) {
+    console.error(
+      "❌ Attendee save failed:",
+      error
+    );
   }
-
-}
-
-// ============================================================
-// DATABASE LOADER
-// ============================================================
-
-async function loadDatabase() {
-
-  if (databaseLoaded) {
-    return;
-  }
-
-  if (databaseLoading) {
-    return databaseLoading;
-  }
-
-  databaseLoading =
-    (async () => {
-
-      await loadSession();
-
-      await loadCustomers();
-
-      await loadBookings();
-
-      databaseLoaded = true;
-
-      console.log(
-        "✅ Supabase database loaded"
-      );
-
-    })();
-
-  try {
-
-    await databaseLoading;
-
-  } finally {
-
-    databaseLoading = null;
-
-  }
-
 }
 
 // ============================================================
@@ -872,13 +703,7 @@ app.post(
     type: "application/json"
   }),
   async (req, res) => {
-
-    console.log(
-      "📥 Square webhook request received"
-    );
-
     try {
-
       const rawBody =
         req.body.toString("utf8");
 
@@ -894,7 +719,6 @@ app.post(
         SQUARE_WEBHOOK_SIGNATURE_KEY &&
         signature
       ) {
-
         const valid =
           verifySquareWebhookSignature(
             rawBody,
@@ -904,22 +728,19 @@ app.post(
           );
 
         if (!valid) {
-
           console.error(
             "❌ Invalid Square webhook signature"
           );
 
           return res.sendStatus(403);
-
         }
-
       }
 
       const event =
         JSON.parse(rawBody);
 
       console.log(
-        `💳 Square event: ${event.type}`
+        `💳 Square event received: ${event.type}`
       );
 
       if (
@@ -928,221 +749,722 @@ app.post(
           event.event_id
         )
       ) {
-
         return res.sendStatus(200);
-
       }
 
       if (
         event.type ===
         "payment.updated"
       ) {
-
         await handleSquarePaymentUpdated(
           event
         );
-
       }
 
       if (event.event_id) {
-
         processedSquareEvents.add(
           event.event_id
         );
-
       }
 
       return res.sendStatus(200);
-
     } catch (error) {
-
       console.error(
         "❌ Square webhook error:",
         error
       );
 
       return res.sendStatus(500);
-
     }
-
   }
 );
 
 // ============================================================
-// JSON BODY PARSER
+// NORMAL JSON PARSER
 // ============================================================
 
-app.use(
-  express.json()
-);
+app.use(express.json());
 
 // ============================================================
-// DATABASE MIDDLEWARE
+// PRIVACY POLICY
 // ============================================================
 
-app.use(
-  async (
-    req,
-    res,
-    next
-  ) => {
+app.get(
+  "/privacy-policy",
+  (req, res) => {
+    res.send(`
+<!DOCTYPE html>
+<html>
+<head>
+<title>Privacy Policy - Badminton Bot</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+body {
+  font-family: Arial, sans-serif;
+  max-width: 800px;
+  margin: 40px auto;
+  padding: 20px;
+  line-height: 1.6;
+  color: #222;
+}
+</style>
+</head>
+<body>
 
-    try {
+<h1>Privacy Policy</h1>
 
-      await loadDatabase();
+<p>
+<strong>Badminton Bot</strong> is a WhatsApp-based service
+designed to help users organise and manage badminton activities.
+</p>
 
-    } catch (error) {
+<h2>Information We Collect</h2>
 
-      console.error(
-        "❌ Database error:",
-        error.message
-      );
+<p>
+We may process information you voluntarily provide,
+including your WhatsApp phone number, name, messages
+and badminton booking information.
+</p>
 
-    }
+<h2>How We Use Your Information</h2>
 
-    next();
+<p>
+We use this information to provide and operate the
+badminton booking service.
+</p>
 
+<h2>Sharing of Information</h2>
+
+<p>
+We do not sell your personal information.
+Information may be processed by service providers
+necessary to operate the service, including WhatsApp/Meta,
+Square, Supabase and hosting providers.
+</p>
+
+<h2>Your Rights</h2>
+
+<p>
+You may request access to or deletion of personal
+information associated with your use of the bot.
+</p>
+
+<h2>Contact</h2>
+
+<p>
+hassan307@hotmail.co.uk
+</p>
+
+<p>
+<strong>Last updated:</strong> 8 September 2026
+</p>
+
+</body>
+</html>
+`);
   }
 );
 
 // ============================================================
-// ADMIN AUTHENTICATION
+// HOME
 // ============================================================
 
-function adminAuthentication(
+app.get(
+  "/",
+  (req, res) => {
+    res.status(200).send(
+      "🏸 Badminton Bot is running!"
+    );
+  }
+);
+
+// ============================================================
+// PAYMENT SUCCESS
+// ============================================================
+
+app.get(
+  "/payment-success",
+  (req, res) => {
+    res.send(`
+<!DOCTYPE html>
+<html>
+<head>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Payment Successful</title>
+</head>
+<body style="font-family:Arial;text-align:center;padding:50px">
+
+<h1>✅ Payment successful</h1>
+
+<p>Your payment has been received.</p>
+
+<p>
+Your booking confirmation will be sent to you on WhatsApp.
+</p>
+
+</body>
+</html>
+`);
+  }
+);
+
+// ============================================================
+// PAYMENT CANCELLED
+// ============================================================
+
+app.get(
+  "/payment-cancelled",
+  (req, res) => {
+    res.send(`
+<!DOCTYPE html>
+<html>
+<head>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Payment Cancelled</title>
+</head>
+<body style="font-family:Arial;text-align:center;padding:50px">
+
+<h1>❌ Payment cancelled</h1>
+
+<p>Your payment was cancelled.</p>
+
+<p>Your spaces have not been confirmed.</p>
+
+<p>Return to WhatsApp to try again.</p>
+
+</body>
+</html>
+`);
+  }
+);
+
+// ============================================================
+// ADMIN AUTH
+// ============================================================
+
+function adminAuthenticated(
   req,
   res,
   next
 ) {
-
-  if (!ADMIN_PASSWORD) {
-
-    return res.status(500).send(
-      "Admin password has not been configured."
-    );
-
-  }
-
   const auth =
     req.headers.authorization;
 
-  if (
-    !auth ||
-    !auth.startsWith("Basic ")
-  ) {
-
+  if (!auth) {
     res.setHeader(
       "WWW-Authenticate",
       'Basic realm="Badminton Admin"'
     );
 
     return res.status(401).send(
-      "Admin login required."
+      "Authentication required."
     );
-
   }
 
-  try {
+  const encoded =
+    auth.split(" ")[1];
 
-    const decoded =
-      Buffer
-        .from(
-          auth.split(" ")[1],
-          "base64"
-        )
-        .toString("utf8");
-
-    const separator =
-      decoded.indexOf(":");
-
-    const username =
-      decoded.substring(
-        0,
-        separator
-      );
-
-    const password =
-      decoded.substring(
-        separator + 1
-      );
-
-    if (
-      username !== "admin" ||
-      password !== ADMIN_PASSWORD
-    ) {
-
-      res.setHeader(
-        "WWW-Authenticate",
-        'Basic realm="Badminton Admin"'
-      );
-
-      return res.status(401).send(
-        "Incorrect admin login."
-      );
-
-    }
-
-    next();
-
-  } catch {
-
+  if (!encoded) {
     return res.status(401).send(
-      "Invalid admin login."
+      "Authentication required."
     );
-
   }
 
+  const decoded =
+    Buffer.from(
+      encoded,
+      "base64"
+    ).toString("utf8");
+
+  const separator =
+    decoded.indexOf(":");
+
+  const password =
+    separator >= 0
+      ? decoded.slice(separator + 1)
+      : "";
+
+  if (
+    ADMIN_PASSWORD &&
+    password === ADMIN_PASSWORD
+  ) {
+    return next();
+  }
+
+  return res.status(401).send(
+    "Invalid password."
+  );
 }
 
 // ============================================================
-// ADMIN SAVE SESSION
+// ADMIN DASHBOARD
+// ============================================================
+
+app.get(
+  "/admin",
+  adminAuthenticated,
+  (req, res) => {
+    const menRemaining =
+      getRemainingSpaces("men");
+
+    const womenRemaining =
+      getRemainingSpaces("women");
+
+    const totalRemaining =
+      menRemaining +
+      womenRemaining;
+
+    const paidBookings =
+      [...bookings.values()]
+        .filter(
+          booking =>
+            booking.status === "paid"
+        );
+
+    const bookedSpaces =
+      paidBookings.reduce(
+        (total, booking) =>
+          total +
+          Number(
+            booking.quantity
+          ),
+        0
+      );
+
+    const revenue =
+      paidBookings.reduce(
+        (total, booking) =>
+          total +
+          Number(
+            booking.amount
+          ),
+        0
+      );
+
+    const bookingRows =
+      paidBookings
+        .map(
+          booking => `
+<tr>
+<td>${escapeHtml(
+            booking.phone
+          )}</td>
+<td>${escapeHtml(
+            capitalize(
+              booking.gender
+            )
+          )}</td>
+<td>${booking.quantity}</td>
+<td>
+${booking.attendeeNames
+  .map(
+    name =>
+      escapeHtml(name)
+  )
+  .join("<br>")}
+</td>
+<td>£${Number(
+            booking.amount
+          ).toFixed(2)}</td>
+<td>Paid ✅</td>
+</tr>
+`
+        )
+        .join("");
+
+    res.send(`
+<!DOCTYPE html>
+<html>
+<head>
+
+<meta name="viewport"
+content="width=device-width, initial-scale=1">
+
+<title>Badminton Admin</title>
+
+<style>
+
+body {
+  font-family: Arial, sans-serif;
+  background: #f5f5f5;
+  margin: 0;
+  padding: 25px;
+  color: #222;
+}
+
+.container {
+  max-width: 1200px;
+  margin: auto;
+}
+
+h1 {
+  margin-bottom: 25px;
+}
+
+.cards {
+  display: grid;
+  grid-template-columns:
+  repeat(auto-fit,minmax(170px,1fr));
+  gap: 15px;
+  margin-bottom: 25px;
+}
+
+.card {
+  background: white;
+  border-radius: 10px;
+  padding: 20px;
+  box-shadow:
+  0 2px 8px rgba(0,0,0,.08);
+}
+
+.card h3 {
+  margin-top: 0;
+  font-size: 14px;
+  color: #666;
+}
+
+.card strong {
+  font-size: 28px;
+}
+
+.panel {
+  background: white;
+  border-radius: 10px;
+  padding: 25px;
+  margin-bottom: 25px;
+  box-shadow:
+  0 2px 8px rgba(0,0,0,.08);
+}
+
+.grid {
+  display: grid;
+  grid-template-columns:
+  repeat(auto-fit,minmax(220px,1fr));
+  gap: 15px;
+}
+
+label {
+  font-weight: bold;
+  display: block;
+  margin-bottom: 6px;
+}
+
+input {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 11px;
+  border: 1px solid #ccc;
+  border-radius: 6px;
+  font-size: 15px;
+}
+
+input:disabled {
+  background: #eee;
+}
+
+button {
+  margin-top: 20px;
+  padding: 12px 20px;
+  border: 0;
+  border-radius: 6px;
+  background: #111;
+  color: white;
+  font-size: 15px;
+  cursor: pointer;
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+th, td {
+  text-align: left;
+  padding: 12px;
+  border-bottom: 1px solid #eee;
+}
+
+.table-wrap {
+  overflow-x: auto;
+}
+
+.message {
+  margin-top: 15px;
+  font-weight: bold;
+}
+
+</style>
+
+</head>
+
+<body>
+
+<div class="container">
+
+<h1>🏸 Badminton Admin</h1>
+
+<div class="cards">
+
+<div class="card">
+<h3>Total Spaces Remaining</h3>
+<strong>${totalRemaining}</strong>
+</div>
+
+<div class="card">
+<h3>Total Spaces Booked</h3>
+<strong>${bookedSpaces}</strong>
+</div>
+
+<div class="card">
+<h3>Men's Spaces</h3>
+<strong>${menRemaining}</strong>
+</div>
+
+<div class="card">
+<h3>Women's Spaces</h3>
+<strong>${womenRemaining}</strong>
+</div>
+
+<div class="card">
+<h3>Revenue Received</h3>
+<strong>£${revenue.toFixed(2)}</strong>
+</div>
+
+</div>
+
+<div class="panel">
+
+<h2>⚙️ Session Details</h2>
+
+<form
+method="POST"
+action="/admin/session"
+>
+
+<div class="grid">
+
+<div>
+<label>Date</label>
+<input
+type="text"
+name="sessionDate"
+value="${escapeHtml(
+      badmintonSession.sessionDate
+    )}"
+required>
+</div>
+
+<div>
+<label>Start Time</label>
+<input
+type="text"
+name="startTime"
+value="${escapeHtml(
+      badmintonSession.startTime
+    )}"
+required>
+</div>
+
+<div>
+<label>End Time</label>
+<input
+type="text"
+name="endTime"
+value="${escapeHtml(
+      badmintonSession.endTime
+    )}"
+required>
+</div>
+
+<div>
+<label>Venue</label>
+<input
+type="text"
+name="venue"
+value="${escapeHtml(
+      badmintonSession.venue
+    )}"
+required>
+</div>
+
+<div>
+<label>Price Per Space (£)</label>
+<input
+type="number"
+step="0.01"
+min="0"
+name="pricePerSpace"
+value="${badmintonSession.pricePerSpace}"
+required>
+</div>
+
+<div>
+<label>Men's Capacity</label>
+<input
+type="number"
+min="0"
+name="menCapacity"
+value="${badmintonSession.menCapacity}"
+required>
+</div>
+
+<div>
+<label>Women's Capacity</label>
+<input
+type="number"
+min="0"
+name="womenCapacity"
+value="${badmintonSession.womenCapacity}"
+required>
+</div>
+
+<div>
+<label>Total Capacity</label>
+<input
+type="number"
+value="${
+      Number(
+        badmintonSession.menCapacity
+      ) +
+      Number(
+        badmintonSession.womenCapacity
+      )
+    }"
+disabled>
+</div>
+
+</div>
+
+<button type="submit">
+Save Changes
+</button>
+
+</form>
+
+${
+  req.query.saved
+    ? `<div class="message">
+        ✅ Session details saved successfully.
+       </div>`
+    : ""
+}
+
+${
+  req.query.error
+    ? `<div class="message">
+        ❌ ${escapeHtml(
+          req.query.error
+        )}
+       </div>`
+    : ""
+}
+
+</div>
+
+<div class="panel">
+
+<h2>📅 Current Session</h2>
+
+<p>
+<strong>Date:</strong>
+${escapeHtml(
+  badmintonSession.sessionDate
+)}
+</p>
+
+<p>
+<strong>Time:</strong>
+${escapeHtml(
+  badmintonSession.startTime
+)}
+-
+${escapeHtml(
+  badmintonSession.endTime
+)}
+</p>
+
+<p>
+<strong>Venue:</strong>
+${escapeHtml(
+  badmintonSession.venue
+)}
+</p>
+
+<p>
+<strong>Price:</strong>
+£${Number(
+  badmintonSession.pricePerSpace
+).toFixed(2)}
+</p>
+
+</div>
+
+<div class="panel">
+
+<h2>🎟️ Paid Bookings</h2>
+
+<div class="table-wrap">
+
+<table>
+
+<thead>
+
+<tr>
+<th>WhatsApp</th>
+<th>Category</th>
+<th>Spaces</th>
+<th>Attendees</th>
+<th>Amount</th>
+<th>Status</th>
+</tr>
+
+</thead>
+
+<tbody>
+
+${
+  bookingRows ||
+  `<tr>
+    <td colspan="6">
+      No paid bookings yet.
+    </td>
+  </tr>`
+}
+
+</tbody>
+
+</table>
+
+</div>
+
+</div>
+
+</div>
+
+</body>
+</html>
+`);
+  }
+);
+
+// ============================================================
+// ADMIN SESSION UPDATE
 // ============================================================
 
 app.post(
   "/admin/session",
-  adminAuthentication,
-  async (
-    req,
-    res
-  ) => {
-
+  adminAuthenticated,
+  async (req, res) => {
     try {
-
       const {
-
-        date,
-
+        sessionDate,
         startTime,
-
         endTime,
-
         venue,
-
         pricePerSpace,
-
         menCapacity,
-
         womenCapacity
-
       } = req.body;
-
-      if (
-        !date ||
-        !startTime ||
-        !endTime ||
-        !venue
-      ) {
-
-        return res.status(400).json({
-          success: false,
-          error:
-            "Date, time and venue are required."
-        });
-
-      }
-
-      const price =
-        Number(pricePerSpace);
 
       const men =
         Number(menCapacity);
@@ -1150,56 +1472,44 @@ app.post(
       const women =
         Number(womenCapacity);
 
+      const price =
+        Number(pricePerSpace);
+
       if (
+        !sessionDate ||
+        !startTime ||
+        !endTime ||
+        !venue ||
         !Number.isFinite(price) ||
-        price < 0
+        !Number.isFinite(men) ||
+        !Number.isFinite(women)
       ) {
-
-        return res.status(400).json({
-          success: false,
-          error:
-            "Please enter a valid price."
-        });
-
+        throw new Error(
+          "Please complete all session fields."
+        );
       }
 
       if (
-        !Number.isInteger(men) ||
-        men < 0
-      ) {
-
-        return res.status(400).json({
-          success: false,
-          error:
-            "Please enter a valid men's capacity."
-        });
-
-      }
-
-      if (
-        !Number.isInteger(women) ||
+        price < 0 ||
+        men < 0 ||
         women < 0
       ) {
-
-        return res.status(400).json({
-          success: false,
-          error:
-            "Please enter a valid women's capacity."
-        });
-
+        throw new Error(
+          "Capacity and price cannot be negative."
+        );
       }
 
-      badmintonSession.date =
-        String(date).trim();
+      badmintonSession.sessionDate =
+        sessionDate.trim();
 
       badmintonSession.startTime =
-        String(startTime).trim();
+        startTime.trim();
 
       badmintonSession.endTime =
-        String(endTime).trim();
+        endTime.trim();
 
       badmintonSession.venue =
-        String(venue).trim();
+        venue.trim();
 
       badmintonSession.pricePerSpace =
         price;
@@ -1215,1272 +1525,25 @@ app.post(
 
       await saveSession();
 
-      res.json({
-        success: true,
-        message:
-          "Session updated successfully."
-      });
+      console.log(
+        "✅ Admin session update completed"
+      );
 
+      return res.redirect(
+        "/admin?saved=1"
+      );
     } catch (error) {
-
       console.error(
-        "❌ Session update error:",
+        "❌ Admin session update failed:",
         error
       );
 
-      res.status(500).json({
-        success: false,
-        error:
+      return res.redirect(
+        `/admin?error=${encodeURIComponent(
           error.message
-      });
-
+        )}`
+      );
     }
-
-  }
-);
-
-// ============================================================
-// ADMIN DASHBOARD
-// ============================================================
-
-app.get(
-  "/admin",
-  adminAuthentication,
-  async (
-    req,
-    res
-  ) => {
-
-    await loadDatabase();
-
-    const menRemaining =
-      getRemainingSpaces("men");
-
-    const womenRemaining =
-      getRemainingSpaces("women");
-
-    const menBooked =
-      badmintonSession.menCapacity -
-      menRemaining;
-
-    const womenBooked =
-      badmintonSession.womenCapacity -
-      womenRemaining;
-
-    const totalBooked =
-      menBooked +
-      womenBooked;
-
-    const totalRemaining =
-      menRemaining +
-      womenRemaining;
-
-    let revenue = 0;
-
-    for (
-      const booking
-      of bookings.values()
-    ) {
-
-      if (
-        booking.status === "paid"
-      ) {
-
-        revenue +=
-          Number(
-            booking.amount
-          ) || 0;
-
-      }
-
-    }
-
-    const bookingRows =
-      [...bookings.values()]
-        .map(
-          booking => {
-
-            const names =
-              (
-                booking.attendeeNames ||
-                []
-              )
-                .map(
-                  escapeHtml
-                )
-                .join("<br>");
-
-            const statusClass =
-              booking.status ===
-              "paid"
-                ? "paid"
-                : "pending";
-
-            const statusText =
-              booking.status ===
-              "paid"
-                ? "PAID"
-                : "PENDING";
-
-            return `
-<tr>
-
-<td>
-${escapeHtml(
-  booking.attendeeNames?.[0] ||
-  "Unknown"
-)}
-</td>
-
-<td>
-${capitalize(
-  booking.gender
-)}
-</td>
-
-<td>
-${booking.quantity || 0}
-</td>
-
-<td>
-${names}
-</td>
-
-<td>
-${escapeHtml(
-  booking.phone
-)}
-</td>
-
-<td>
-<span class="status ${statusClass}">
-${statusText}
-</span>
-</td>
-
-<td>
-£${Number(
-  booking.amount || 0
-).toFixed(2)}
-</td>
-
-<td>
-${
-  booking.createdAt
-    ? new Date(
-        booking.createdAt
-      ).toLocaleString(
-        "en-GB"
-      )
-    : "-"
-}
-</td>
-
-</tr>
-`;
-
-          }
-        )
-        .join("");
-
-    res.send(`
-<!DOCTYPE html>
-
-<html lang="en">
-
-<head>
-
-<meta charset="UTF-8">
-
-<meta
-name="viewport"
-content="width=device-width, initial-scale=1.0"
->
-
-<title>Badminton Admin</title>
-
-<style>
-
-* {
-box-sizing: border-box;
-}
-
-body {
-
-margin: 0;
-
-font-family:
--apple-system,
-BlinkMacSystemFont,
-"Segoe UI",
-Arial,
-sans-serif;
-
-background: #f5f7fa;
-
-color: #17202a;
-
-}
-
-.header {
-
-background: #111827;
-
-color: white;
-
-padding: 24px 32px;
-
-}
-
-.header-inner {
-
-max-width: 1400px;
-
-margin: auto;
-
-display: flex;
-
-justify-content: space-between;
-
-align-items: center;
-
-}
-
-.header h1 {
-
-margin: 0;
-
-font-size: 25px;
-
-}
-
-.header p {
-
-margin: 5px 0 0;
-
-opacity: .7;
-
-}
-
-.container {
-
-max-width: 1400px;
-
-margin: 30px auto;
-
-padding: 0 20px;
-
-}
-
-.card {
-
-background: white;
-
-border-radius: 14px;
-
-padding: 25px;
-
-margin-bottom: 25px;
-
-box-shadow:
-0 2px 10px rgba(0,0,0,.05);
-
-}
-
-.card h2 {
-
-margin-top: 0;
-
-}
-
-.edit-grid {
-
-display: grid;
-
-grid-template-columns:
-repeat(auto-fit, minmax(200px, 1fr));
-
-gap: 18px;
-
-}
-
-.field {
-
-display: flex;
-
-flex-direction: column;
-
-gap: 7px;
-
-}
-
-.field label {
-
-font-weight: 600;
-
-font-size: 13px;
-
-color: #374151;
-
-}
-
-.field input {
-
-padding: 12px;
-
-border:
-1px solid #d1d5db;
-
-border-radius: 8px;
-
-font-size: 15px;
-
-width: 100%;
-
-}
-
-.field input:focus {
-
-outline: none;
-
-border-color: #111827;
-
-}
-
-.save-button {
-
-margin-top: 20px;
-
-background: #111827;
-
-color: white;
-
-border: 0;
-
-border-radius: 8px;
-
-padding: 13px 22px;
-
-font-size: 14px;
-
-font-weight: 600;
-
-cursor: pointer;
-
-}
-
-.save-button:hover {
-
-opacity: .9;
-
-}
-
-.save-message {
-
-margin-left: 12px;
-
-font-size: 14px;
-
-font-weight: 600;
-
-}
-
-.session-details {
-
-display: grid;
-
-grid-template-columns:
-repeat(auto-fit, minmax(180px, 1fr));
-
-gap: 15px;
-
-}
-
-.detail {
-
-background: #f8fafc;
-
-padding: 15px;
-
-border-radius: 10px;
-
-}
-
-.detail strong {
-
-display: block;
-
-margin-bottom: 5px;
-
-}
-
-.stats {
-
-display: grid;
-
-grid-template-columns:
-repeat(auto-fit, minmax(200px, 1fr));
-
-gap: 18px;
-
-margin-bottom: 25px;
-
-}
-
-.stat {
-
-background: white;
-
-border-radius: 14px;
-
-padding: 22px;
-
-box-shadow:
-0 2px 10px rgba(0,0,0,.05);
-
-}
-
-.stat-label {
-
-color: #6b7280;
-
-font-size: 14px;
-
-}
-
-.stat-number {
-
-font-size: 32px;
-
-font-weight: 700;
-
-margin-top: 8px;
-
-}
-
-.table-wrapper {
-
-overflow-x: auto;
-
-}
-
-table {
-
-width: 100%;
-
-border-collapse: collapse;
-
-min-width: 850px;
-
-}
-
-th {
-
-text-align: left;
-
-background: #f8fafc;
-
-padding: 13px;
-
-font-size: 13px;
-
-color: #4b5563;
-
-}
-
-td {
-
-padding: 14px 13px;
-
-border-top:
-1px solid #edf0f3;
-
-font-size: 14px;
-
-}
-
-.status {
-
-display: inline-block;
-
-padding: 5px 9px;
-
-border-radius: 999px;
-
-font-size: 11px;
-
-font-weight: 700;
-
-}
-
-.status.paid {
-
-background: #dcfce7;
-
-color: #166534;
-
-}
-
-.status.pending {
-
-background: #fef3c7;
-
-color: #92400e;
-
-}
-
-.refresh {
-
-background: white;
-
-border:
-1px solid #d1d5db;
-
-border-radius: 8px;
-
-padding: 9px 14px;
-
-cursor: pointer;
-
-}
-
-@media(max-width:600px) {
-
-.header {
-padding: 20px;
-}
-
-.container {
-padding: 0 12px;
-margin-top: 18px;
-}
-
-.card {
-padding: 18px;
-}
-
-}
-
-</style>
-
-</head>
-
-<body>
-
-<div class="header">
-
-<div class="header-inner">
-
-<div>
-
-<h1>🏸 Badminton Admin</h1>
-
-<p>Session management dashboard</p>
-
-</div>
-
-<button
-class="refresh"
-onclick="location.reload()"
->
-Refresh
-</button>
-
-</div>
-
-</div>
-
-<div class="container">
-
-<!-- EDIT SESSION -->
-
-<div class="card">
-
-<h2>⚙️ Session Details</h2>
-
-<p>
-Edit any of the session information below.
-Changes are saved permanently to Supabase.
-</p>
-
-<div class="edit-grid">
-
-<div class="field">
-
-<label>
-📅 Date
-</label>
-
-<input
-id="date"
-type="text"
-value="${escapeHtml(
-  badmintonSession.date
-)}"
-placeholder="Saturday 12 September"
->
-
-</div>
-
-<div class="field">
-
-<label>
-🕖 Start Time
-</label>
-
-<input
-id="startTime"
-type="text"
-value="${escapeHtml(
-  badmintonSession.startTime
-)}"
-placeholder="7:00 PM"
->
-
-</div>
-
-<div class="field">
-
-<label>
-🕘 End Time
-</label>
-
-<input
-id="endTime"
-type="text"
-value="${escapeHtml(
-  badmintonSession.endTime
-)}"
-placeholder="9:00 PM"
->
-
-</div>
-
-<div class="field">
-
-<label>
-📍 Venue
-</label>
-
-<input
-id="venue"
-type="text"
-value="${escapeHtml(
-  badmintonSession.venue
-)}"
-placeholder="Peckham Sports Centre"
->
-
-</div>
-
-<div class="field">
-
-<label>
-💷 Price Per Space (£)
-</label>
-
-<input
-id="pricePerSpace"
-type="number"
-min="0"
-step="0.01"
-value="${badmintonSession.pricePerSpace}"
->
-
-</div>
-
-<div class="field">
-
-<label>
-👨 Men's Capacity
-</label>
-
-<input
-id="menCapacity"
-type="number"
-min="0"
-step="1"
-value="${badmintonSession.menCapacity}"
->
-
-</div>
-
-<div class="field">
-
-<label>
-👩 Women's Capacity
-</label>
-
-<input
-id="womenCapacity"
-type="number"
-min="0"
-step="1"
-value="${badmintonSession.womenCapacity}"
->
-
-</div>
-
-<div class="field">
-
-<label>
-🎟️ Total Capacity
-</label>
-
-<input
-type="number"
-value="${badmintonSession.totalCapacity}"
-disabled
->
-
-</div>
-
-</div>
-
-<button
-class="save-button"
-onclick="saveSession()"
->
-Save Changes
-</button>
-
-<span
-id="saveMessage"
-class="save-message"
-></span>
-
-</div>
-
-<!-- CURRENT SESSION -->
-
-<div class="card">
-
-<h2>📋 Current Session</h2>
-
-<div class="session-details">
-
-<div class="detail">
-
-<strong>📅 Date</strong>
-
-${escapeHtml(
-  badmintonSession.date
-)}
-
-</div>
-
-<div class="detail">
-
-<strong>🕖 Time</strong>
-
-${escapeHtml(
-  badmintonSession.startTime
-)}
--
-${escapeHtml(
-  badmintonSession.endTime
-)}
-
-</div>
-
-<div class="detail">
-
-<strong>📍 Venue</strong>
-
-${escapeHtml(
-  badmintonSession.venue
-)}
-
-</div>
-
-<div class="detail">
-
-<strong>💷 Price</strong>
-
-£${Number(
-  badmintonSession.pricePerSpace
-).toFixed(2)}
-
-per space
-
-</div>
-
-</div>
-
-</div>
-
-<!-- STATS -->
-
-<div class="stats">
-
-<div class="stat">
-
-<div class="stat-label">
-Total Spaces Remaining
-</div>
-
-<div class="stat-number">
-${totalRemaining}
-</div>
-
-</div>
-
-<div class="stat">
-
-<div class="stat-label">
-Total Spaces Booked
-</div>
-
-<div class="stat-number">
-${totalBooked}
-</div>
-
-</div>
-
-<div class="stat">
-
-<div class="stat-label">
-Men's Spaces
-</div>
-
-<div class="stat-number">
-${menBooked}/${badmintonSession.menCapacity}
-</div>
-
-</div>
-
-<div class="stat">
-
-<div class="stat-label">
-Women's Spaces
-</div>
-
-<div class="stat-number">
-${womenBooked}/${badmintonSession.womenCapacity}
-</div>
-
-</div>
-
-<div class="stat">
-
-<div class="stat-label">
-Revenue Received
-</div>
-
-<div class="stat-number">
-£${revenue.toFixed(2)}
-</div>
-
-</div>
-
-</div>
-
-<!-- BOOKINGS -->
-
-<div class="card">
-
-<h2>📋 Bookings</h2>
-
-${
-  bookingRows
-    ? `
-<div class="table-wrapper">
-
-<table>
-
-<thead>
-
-<tr>
-
-<th>Player</th>
-
-<th>Category</th>
-
-<th>Spaces</th>
-
-<th>Attendees</th>
-
-<th>WhatsApp</th>
-
-<th>Payment</th>
-
-<th>Amount</th>
-
-<th>Booked</th>
-
-</tr>
-
-</thead>
-
-<tbody>
-
-${bookingRows}
-
-</tbody>
-
-</table>
-
-</div>
-`
-    : `
-<div style="
-text-align:center;
-padding:35px;
-color:#6b7280;
-">
-No bookings yet.
-</div>
-`
-}
-
-</div>
-
-</div>
-
-<script>
-
-async function saveSession() {
-
-const message =
-document.getElementById(
-"saveMessage"
-);
-
-message.textContent =
-"Saving...";
-
-message.style.color =
-"#374151";
-
-try {
-
-const response =
-await fetch(
-"/admin/session",
-{
-
-method: "POST",
-
-headers: {
-"Content-Type":
-"application/json"
-},
-
-body:
-JSON.stringify({
-
-date:
-document.getElementById(
-"date"
-).value,
-
-startTime:
-document.getElementById(
-"startTime"
-).value,
-
-endTime:
-document.getElementById(
-"endTime"
-).value,
-
-venue:
-document.getElementById(
-"venue"
-).value,
-
-pricePerSpace:
-document.getElementById(
-"pricePerSpace"
-).value,
-
-menCapacity:
-document.getElementById(
-"menCapacity"
-).value,
-
-womenCapacity:
-document.getElementById(
-"womenCapacity"
-).value
-
-})
-
-}
-);
-
-const data =
-await response.json();
-
-if (!response.ok) {
-
-throw new Error(
-data.error ||
-"Could not save changes."
-);
-
-}
-
-message.textContent =
-"✅ Saved successfully.";
-
-message.style.color =
-"#166534";
-
-setTimeout(
-function() {
-location.reload();
-},
-700
-);
-
-} catch(error) {
-
-message.textContent =
-"❌ " + error.message;
-
-message.style.color =
-"#991b1b";
-
-}
-
-}
-
-</script>
-
-</body>
-
-</html>
-`);
-
-  }
-);
-
-// ============================================================
-// PRIVACY POLICY
-// ============================================================
-
-app.get(
-  "/privacy-policy",
-  (req, res) => {
-
-    res.send(`
-<!DOCTYPE html>
-
-<html>
-
-<head>
-
-<title>Privacy Policy - Badminton Bot</title>
-
-<meta
-name="viewport"
-content="width=device-width, initial-scale=1"
->
-
-<style>
-
-body {
-
-font-family: Arial, sans-serif;
-
-max-width: 800px;
-
-margin: 40px auto;
-
-padding: 20px;
-
-line-height: 1.6;
-
-color: #222;
-
-}
-
-</style>
-
-</head>
-
-<body>
-
-<h1>Privacy Policy</h1>
-
-<p>
-<strong>Badminton Bot</strong> is a WhatsApp-based
-service designed to help users organise and manage
-badminton activities.
-</p>
-
-<h2>Information We Collect</h2>
-
-<p>
-When you use Badminton Bot, we may process information
-that you voluntarily provide, including your WhatsApp
-phone number, name, messages and information relating
-to your badminton activities.
-</p>
-
-<h2>How We Use Your Information</h2>
-
-<p>
-We use this information to provide, operate and improve
-the Badminton Bot service.
-</p>
-
-<h2>Sharing of Information</h2>
-
-<p>
-We do not sell your personal information.
-Information may be processed by service providers
-necessary to operate the bot, including WhatsApp/Meta
-and our hosting and software providers.
-</p>
-
-<h2>Data Retention</h2>
-
-<p>
-We retain information only for as long as reasonably
-necessary to provide the service or where we have a
-legitimate legal or operational reason to retain it.
-</p>
-
-<h2>Your Rights</h2>
-
-<p>
-You may request access to or deletion of personal
-information associated with your use of the bot.
-</p>
-
-<h2>Contact</h2>
-
-<p>
-<strong>hassan307@hotmail.co.uk</strong>
-</p>
-
-<p>
-<strong>Last updated:</strong> 8 September 2026
-</p>
-
-</body>
-
-</html>
-`);
-
-  }
-);
-
-// ============================================================
-// HOME
-// ============================================================
-
-app.get(
-  "/",
-  (req, res) => {
-
-    res.status(200).send(
-      "🏸 Badminton Bot is running!"
-    );
-
-  }
-);
-
-// ============================================================
-// PAYMENT SUCCESS
-// ============================================================
-
-app.get(
-  "/payment-success",
-  (req, res) => {
-
-    res.send(`
-<!DOCTYPE html>
-
-<html>
-
-<head>
-
-<meta
-name="viewport"
-content="width=device-width, initial-scale=1"
->
-
-<title>Payment Successful</title>
-
-</head>
-
-<body
-style="
-font-family: Arial;
-text-align: center;
-padding: 50px;
-"
->
-
-<h1>✅ Payment successful</h1>
-
-<p>
-Your payment has been received.
-</p>
-
-<p>
-Your booking confirmation will be sent to you
-on WhatsApp.
-</p>
-
-</body>
-
-</html>
-`);
-
-  }
-);
-
-// ============================================================
-// PAYMENT CANCELLED
-// ============================================================
-
-app.get(
-  "/payment-cancelled",
-  (req, res) => {
-
-    res.send(`
-<!DOCTYPE html>
-
-<html>
-
-<head>
-
-<meta
-name="viewport"
-content="width=device-width, initial-scale=1"
->
-
-<title>Payment Cancelled</title>
-
-</head>
-
-<body
-style="
-font-family: Arial;
-text-align: center;
-padding: 50px;
-"
->
-
-<h1>❌ Payment cancelled</h1>
-
-<p>
-Your payment was cancelled.
-</p>
-
-<p>
-Your spaces have not been booked.
-</p>
-
-</body>
-
-</html>
-`);
-
   }
 );
 
@@ -2491,21 +1554,25 @@ Your spaces have not been booked.
 app.get(
   "/webhook",
   (req, res) => {
-
     const mode =
-      req.query["hub.mode"];
+      req.query[
+        "hub.mode"
+      ];
 
     const token =
-      req.query["hub.verify_token"];
+      req.query[
+        "hub.verify_token"
+      ];
 
     const challenge =
-      req.query["hub.challenge"];
+      req.query[
+        "hub.challenge"
+      ];
 
     if (
       mode === "subscribe" &&
       token === VERIFY_TOKEN
     ) {
-
       console.log(
         "✅ WhatsApp webhook verified"
       );
@@ -2513,11 +1580,13 @@ app.get(
       return res
         .status(200)
         .send(challenge);
-
     }
 
-    return res.sendStatus(403);
+    console.log(
+      "❌ WhatsApp webhook verification failed"
+    );
 
+    return res.sendStatus(403);
   }
 );
 
@@ -2527,17 +1596,13 @@ app.get(
 
 app.post(
   "/webhook",
-  async (
-    req,
-    res
-  ) => {
-
+  async (req, res) => {
     res.sendStatus(200);
 
     try {
-
       const value =
-        req.body?.entry?.[0]
+        req.body
+          ?.entry?.[0]
           ?.changes?.[0]
           ?.value;
 
@@ -2570,23 +1635,17 @@ app.post(
         );
 
       if (reply) {
-
         await sendWhatsAppMessage(
           from,
           reply
         );
-
       }
-
     } catch (error) {
-
       console.error(
         "❌ WhatsApp webhook error:",
         error
       );
-
     }
-
   }
 );
 
@@ -2598,9 +1657,6 @@ async function handleMessage(
   phone,
   text
 ) {
-
-  await loadDatabase();
-
   const command =
     text.toLowerCase().trim();
 
@@ -2611,11 +1667,9 @@ async function handleMessage(
     command === "cancel" ||
     command === "menu"
   ) {
-
     bookingStates.delete(phone);
 
     return getMainMenu();
-
   }
 
   if (
@@ -2623,21 +1677,17 @@ async function handleMessage(
     command === "hello" ||
     command === "start"
   ) {
-
     bookingStates.delete(phone);
 
     return getMainMenu();
-
   }
 
   if (state) {
-
-    return await handleBookingFlow(
+    return handleBookingFlow(
       phone,
       text,
       state
     );
-
   }
 
   if (
@@ -2645,7 +1695,6 @@ async function handleMessage(
     command === "book" ||
     command === "booking"
   ) {
-
     bookingStates.set(
       phone,
       {
@@ -2655,10 +1704,9 @@ async function handleMessage(
     );
 
     return (
-
       "🏸 *Book a Space*\n\n" +
 
-      `📅 ${badmintonSession.date}\n` +
+      `📅 ${badmintonSession.sessionDate}\n` +
 
       `🕖 ${badmintonSession.startTime} - ${badmintonSession.endTime}\n` +
 
@@ -2671,9 +1719,7 @@ async function handleMessage(
       "Reply *YES* to continue.\n" +
 
       "Reply *NO* to go back."
-
     );
-
   }
 
   if (
@@ -2682,20 +1728,14 @@ async function handleMessage(
     command === "space" ||
     command === "availability"
   ) {
-
     return getAvailabilityMessage();
-
   }
 
   if (
     command === "3" ||
     command === "my booking"
   ) {
-
-    return getMyBooking(
-      phone
-    );
-
+    return getMyBooking(phone);
   }
 
   if (
@@ -2703,40 +1743,26 @@ async function handleMessage(
     command === "my details" ||
     command === "details"
   ) {
-
     const player =
       players.get(phone);
 
     if (!player) {
-
       return (
-
         "👤 *Your Details*\n\n" +
-
-        "I don't have your details yet.\n\n" +
-
-        "Please send me your full name."
-
+        "I don't have your details yet."
       );
-
     }
 
     return (
-
       "👤 *Your Details*\n\n" +
-
       `Name: ${player.name}\n` +
-
       `Points: ${player.points || 0}\n` +
-
       `Payment: ${
         player.paid
           ? "Paid ✅"
           : "Not paid ❌"
       }`
-
     );
-
   }
 
   if (
@@ -2744,61 +1770,46 @@ async function handleMessage(
     command === "ranking" ||
     command === "rankings"
   ) {
-
     return getRanking();
-
   }
 
   if (
     isValidFullName(text)
   ) {
-
     const existing =
       players.get(phone);
 
-    const player = {
-
-      name:
-        text.trim(),
-
-      points:
-        existing?.points || 0,
-
-      paid:
-        existing?.paid || false
-
-    };
-
     players.set(
       phone,
-      player
+      {
+        name:
+          text.trim(),
+
+        points:
+          existing?.points || 0,
+
+        paid:
+          existing?.paid || false
+      }
     );
 
     await saveCustomer(
       phone,
-      player
+      text.trim(),
+      existing?.paid || false
     );
 
     return (
-
       `Thanks, ${text.trim()}! 👋\n\n` +
-
       "I've saved your player details.\n\n" +
-
       "Reply *menu* to see what I can do."
-
     );
-
   }
 
   return (
-
     "🏸 I didn't understand that.\n\n" +
-
     "Reply *menu* to see what I can do."
-
   );
-
 }
 
 // ============================================================
@@ -2806,27 +1817,19 @@ async function handleMessage(
 // ============================================================
 
 function getMainMenu() {
-
   return (
-
     "🏸 *Badminton Bot*\n\n" +
 
     "What would you like to do?\n\n" +
 
     "1️⃣ *Book a space*\n" +
-
     "2️⃣ *Check availability*\n" +
-
     "3️⃣ *My booking*\n" +
-
     "4️⃣ *My details*\n" +
-
     "5️⃣ *Rankings*\n\n" +
 
     "Reply with the number or option."
-
   );
-
 }
 
 // ============================================================
@@ -2838,36 +1841,34 @@ async function handleBookingFlow(
   text,
   state
 ) {
-
   const command =
     text.toLowerCase().trim();
+
+  // ----------------------------------------------------------
+  // CONFIRM SESSION
+  // ----------------------------------------------------------
 
   if (
     state.step ===
     "confirm_session"
   ) {
-
     if (
       command === "no" ||
       command === "n"
     ) {
-
       bookingStates.delete(phone);
 
       return getMainMenu();
-
     }
 
     if (
       command !== "yes" &&
       command !== "y"
     ) {
-
       return (
         "Please reply *YES* to continue " +
         "or *NO* to go back."
       );
-
     }
 
     bookingStates.set(
@@ -2879,14 +1880,16 @@ async function handleBookingFlow(
     );
 
     return getGenderSelection();
-
   }
+
+  // ----------------------------------------------------------
+  // CHOOSE GENDER
+  // ----------------------------------------------------------
 
   if (
     state.step ===
     "choose_gender"
   ) {
-
     let gender = null;
 
     if (
@@ -2896,9 +1899,7 @@ async function handleBookingFlow(
       command === "m" ||
       command === "1"
     ) {
-
       gender = "men";
-
     }
 
     if (
@@ -2908,25 +1909,16 @@ async function handleBookingFlow(
       command === "w" ||
       command === "2"
     ) {
-
       gender = "women";
-
     }
 
     if (!gender) {
-
       return (
-
-        "I just need to know which category you're booking for.\n\n" +
-
+        "Please choose a category:\n\n" +
         "1️⃣ *Men*\n" +
-
         "2️⃣ *Women*\n\n" +
-
-        "Reply *1* for Men or *2* for Women."
-
+        "Reply *1* or *2*."
       );
-
     }
 
     const available =
@@ -2937,73 +1929,56 @@ async function handleBookingFlow(
     if (
       available <= 0
     ) {
-
       return (
-
         `❌ There are currently no ${gender}'s spaces available.\n\n` +
-
         "Reply *menu* to return."
-
       );
-
     }
 
     bookingStates.set(
       phone,
       {
-
         step:
           "choose_quantity",
 
         gender
-
       }
     );
 
     return (
-
-      `🏸 *${capitalize(
-        gender
-      )}'s spaces*\n\n` +
+      `🏸 *${capitalize(gender)}'s spaces*\n\n` +
 
       `There are *${available}* spaces available.\n\n` +
 
       "How many spaces would you like to book?\n\n" +
 
       "1️⃣ *1 space*\n" +
-
       "2️⃣ *2 spaces*\n" +
-
       "3️⃣ *3 spaces*\n\n" +
 
-      "Maximum *3 spaces* per booking.\n\n" +
-
-      "Reply with *1*, *2* or *3*."
-
+      "Maximum 3 spaces per booking."
     );
-
   }
+
+  // ----------------------------------------------------------
+  // QUANTITY
+  // ----------------------------------------------------------
 
   if (
     state.step ===
     "choose_quantity"
   ) {
-
     const quantity =
       Number(command);
 
     if (
-      !Number.isInteger(
-        quantity
-      ) ||
+      !Number.isInteger(quantity) ||
       quantity < 1 ||
       quantity > 3
     ) {
-
       return (
-        "Please choose 1, 2 or 3 spaces."
+        "Please choose *1*, *2* or *3* spaces."
       );
-
     }
 
     const available =
@@ -3014,17 +1989,14 @@ async function handleBookingFlow(
     if (
       quantity > available
     ) {
-
       return (
-        `❌ There are only *${available}* spaces remaining.`
+        `❌ There are only *${available}* ${state.gender}'s spaces remaining.`
       );
-
     }
 
     bookingStates.set(
       phone,
       {
-
         step:
           "collect_names",
 
@@ -3036,39 +2008,31 @@ async function handleBookingFlow(
         attendeeNames: [],
 
         currentAttendee: 1
-
       }
     );
 
     return (
-
       "👤 *Attendee 1*\n\n" +
-
-      "Please enter the *full name* of the first attendee.\n\n" +
-
-      "Example: *John Smith*"
-
+      "Please enter the *full name* of the first attendee."
     );
-
   }
+
+  // ----------------------------------------------------------
+  // COLLECT NAMES
+  // ----------------------------------------------------------
 
   if (
     state.step ===
     "collect_names"
   ) {
-
     if (
       !isValidFullName(text)
     ) {
-
       return (
-
         "Please enter the attendee's *full name*.\n\n" +
-
-        "Example: *John Smith*"
-
+        "Example:\n" +
+        "*John Smith*"
       );
-
     }
 
     state.attendeeNames.push(
@@ -3079,7 +2043,6 @@ async function handleBookingFlow(
       state.attendeeNames.length <
       state.quantity
     ) {
-
       state.currentAttendee =
         state.attendeeNames.length +
         1;
@@ -3090,19 +2053,14 @@ async function handleBookingFlow(
       );
 
       return (
-
         `👤 *Attendee ${state.currentAttendee}*\n\n` +
-
         "Please enter the *full name*."
-
       );
-
     }
 
     bookingStates.set(
       phone,
       {
-
         step:
           "confirm_booking",
 
@@ -3114,7 +2072,6 @@ async function handleBookingFlow(
 
         attendeeNames:
           state.attendeeNames
-
       }
     );
 
@@ -3123,44 +2080,36 @@ async function handleBookingFlow(
       state.quantity,
       state.attendeeNames
     );
-
   }
+
+  // ----------------------------------------------------------
+  // CONFIRM BOOKING
+  // ----------------------------------------------------------
 
   if (
     state.step ===
     "confirm_booking"
   ) {
-
     if (
       command === "no" ||
       command === "n"
     ) {
-
       bookingStates.delete(phone);
 
       return (
-
         "❌ Booking cancelled.\n\n" +
-
         getMainMenu()
-
       );
-
     }
 
     if (
       command !== "yes" &&
       command !== "y"
     ) {
-
       return (
-
-        "Please reply *YES* to confirm your booking " +
-
+        "Please reply *YES* to continue to payment " +
         "or *NO* to cancel."
-
       );
-
     }
 
     const available =
@@ -3171,21 +2120,15 @@ async function handleBookingFlow(
     if (
       state.quantity > available
     ) {
-
       bookingStates.delete(phone);
 
       return (
-
         "❌ Sorry, those spaces have just been taken.\n\n" +
-
         getAvailabilityMessage()
-
       );
-
     }
 
     try {
-
       const paymentLink =
         await createSquarePaymentLink(
           phone,
@@ -3195,7 +2138,6 @@ async function handleBookingFlow(
         );
 
       const booking = {
-
         status:
           "pending",
 
@@ -3223,34 +2165,29 @@ async function handleBookingFlow(
         squareOrderId:
           paymentLink.orderId,
 
+        paymentStatus:
+          "PENDING",
+
         createdAt:
           new Date().toISOString()
-
       };
 
-      bookings.set(
+      await saveBooking(
         phone,
         booking
       );
 
-      await saveBooking(
-        booking
-      );
-
-      bookingStates.delete(
-        phone
-      );
+      bookingStates.delete(phone);
 
       return (
-
         "💳 *Payment required*\n\n" +
 
         `Amount: *£${
-          booking.amount
+          state.quantity *
+          badmintonSession.pricePerSpace
         }*\n\n` +
 
         "Click the secure Square payment link below " +
-
         "to complete your booking:\n\n" +
 
         paymentLink.url +
@@ -3258,36 +2195,24 @@ async function handleBookingFlow(
         "\n\n" +
 
         "⚠️ Your booking is only confirmed once Square confirms your payment."
-
       );
-
     } catch (error) {
-
       console.error(
         "❌ Square payment link error:",
         error
       );
 
       return (
-
         "❌ Sorry, I couldn't create the payment link.\n\n" +
-
         "Please try again in a moment."
-
       );
-
     }
-
   }
 
   return (
-
     "🏸 Something went wrong.\n\n" +
-
     "Reply *menu* to start again."
-
   );
-
 }
 
 // ============================================================
@@ -3295,31 +2220,21 @@ async function handleBookingFlow(
 // ============================================================
 
 function getGenderSelection() {
-
   const menSpaces =
-    getRemainingSpaces(
-      "men"
-    );
+    getRemainingSpaces("men");
 
   const womenSpaces =
-    getRemainingSpaces(
-      "women"
-    );
+    getRemainingSpaces("women");
 
   return (
-
     "🏸 *Choose your category*\n\n" +
-
-    "Please choose the category you're booking for:\n\n" +
 
     `1️⃣ *Men* — ${menSpaces} spaces available\n` +
 
     `2️⃣ *Women* — ${womenSpaces} spaces available\n\n` +
 
     "Reply *1* for Men or *2* for Women."
-
   );
-
 }
 
 // ============================================================
@@ -3331,7 +2246,6 @@ function getBookingConfirmation(
   quantity,
   attendeeNames
 ) {
-
   const total =
     quantity *
     badmintonSession.pricePerSpace;
@@ -3345,18 +2259,15 @@ function getBookingConfirmation(
       .join("\n");
 
   return (
-
     "🏸 *Booking Confirmation*\n\n" +
 
-    `📅 ${badmintonSession.date}\n` +
+    `📅 ${badmintonSession.sessionDate}\n` +
 
     `🕖 ${badmintonSession.startTime} - ${badmintonSession.endTime}\n` +
 
     `📍 ${badmintonSession.venue}\n\n` +
 
-    `👥 Category: ${capitalize(
-      gender
-    )}\n` +
+    `👥 Category: ${capitalize(gender)}\n` +
 
     `🎟️ Spaces: ${quantity}\n\n` +
 
@@ -3373,9 +2284,7 @@ function getBookingConfirmation(
     "Reply *YES* to continue to payment.\n" +
 
     "Reply *NO* to cancel."
-
   );
-
 }
 
 // ============================================================
@@ -3388,21 +2297,20 @@ async function createSquarePaymentLink(
   quantity,
   attendeeNames
 ) {
-
-  if (!SQUARE_ACCESS_TOKEN) {
-
+  if (
+    !SQUARE_ACCESS_TOKEN
+  ) {
     throw new Error(
       "SQUARE_ACCESS_TOKEN is missing."
     );
-
   }
 
-  if (!SQUARE_LOCATION_ID) {
-
+  if (
+    !SQUARE_LOCATION_ID
+  ) {
     throw new Error(
       "SQUARE_LOCATION_ID is missing."
     );
-
   }
 
   const totalAmount =
@@ -3413,20 +2321,20 @@ async function createSquarePaymentLink(
   const attendeeText =
     attendeeNames.join(", ");
 
+  const idempotencyKey =
+    crypto.randomUUID();
+
   const paymentNote =
-    `Badminton booking | ` +
-    `${phone} | ` +
+    `Badminton booking | ${phone} | ` +
     `${capitalize(gender)} | ` +
     `${quantity} spaces | ` +
     `${attendeeText}`;
 
   const requestBody = {
-
     idempotency_key:
-      crypto.randomUUID(),
+      idempotencyKey,
 
     quick_pay: {
-
       name:
         `Badminton Session - ${quantity} space${
           quantity === 1
@@ -3435,18 +2343,15 @@ async function createSquarePaymentLink(
         }`,
 
       price_money: {
-
         amount:
           totalAmount,
 
         currency:
           "GBP"
-
       },
 
       location_id:
         SQUARE_LOCATION_ID
-
     },
 
     description:
@@ -3456,24 +2361,18 @@ async function createSquarePaymentLink(
       paymentNote,
 
     checkout_options: {
-
       redirect_url:
         `${BASE_URL}/payment-success`
-
     }
-
   };
 
   const response =
     await fetch(
       `${SQUARE_API_BASE}/v2/online-checkout/payment-links`,
       {
-
-        method:
-          "POST",
+        method: "POST",
 
         headers: {
-
           Authorization:
             `Bearer ${SQUARE_ACCESS_TOKEN}`,
 
@@ -3482,14 +2381,12 @@ async function createSquarePaymentLink(
 
           "Square-Version":
             "2026-08-19"
-
         },
 
         body:
           JSON.stringify(
             requestBody
           )
-
       }
     );
 
@@ -3497,7 +2394,6 @@ async function createSquarePaymentLink(
     await response.json();
 
   if (!response.ok) {
-
     console.error(
       "❌ Square API error:",
       data
@@ -3507,17 +2403,14 @@ async function createSquarePaymentLink(
       data?.errors?.[0]?.detail ||
       "Square payment link creation failed."
     );
-
   }
 
   if (
     !data.payment_link?.url
   ) {
-
     throw new Error(
       "Square did not return a payment link."
     );
-
   }
 
   console.log(
@@ -3526,7 +2419,6 @@ async function createSquarePaymentLink(
   );
 
   return {
-
     id:
       data.payment_link.id,
 
@@ -3535,9 +2427,7 @@ async function createSquarePaymentLink(
 
     orderId:
       data.payment_link.order_id
-
   };
-
 }
 
 // ============================================================
@@ -3547,61 +2437,40 @@ async function createSquarePaymentLink(
 async function handleSquarePaymentUpdated(
   event
 ) {
-
-  await loadDatabase();
-
   const payment =
     event?.data?.object?.payment;
 
   if (!payment) {
-
-    console.log(
-      "⚠️ No payment in Square webhook."
-    );
-
     return;
-
   }
 
   console.log(
-    `💳 Payment ${payment.id}: ${payment.status}`
-  );
-
-  console.log(
-    `📦 Order: ${
-      payment.order_id ||
-      "none"
-    }`
+    `💳 Square payment ${payment.id} status: ${payment.status}`
   );
 
   if (
     payment.status !==
     "COMPLETED"
   ) {
-
-    console.log(
-      `ℹ️ Payment is ${payment.status}; waiting for COMPLETED.`
-    );
-
     return;
-
   }
 
   const orderId =
     payment.order_id;
 
   if (!orderId) {
-
     console.error(
       "❌ Completed payment has no order ID."
     );
 
     return;
-
   }
 
-  let bookingPhone = null;
-  let booking = null;
+  let bookingPhone =
+    null;
+
+  let booking =
+    null;
 
   for (
     const [
@@ -3610,14 +2479,12 @@ async function handleSquarePaymentUpdated(
     ]
     of bookings.entries()
   ) {
-
     if (
       existingBooking.status ===
-      "pending" &&
+        "pending" &&
       existingBooking.squareOrderId ===
-      orderId
+        orderId
     ) {
-
       bookingPhone =
         phone;
 
@@ -3625,32 +2492,22 @@ async function handleSquarePaymentUpdated(
         existingBooking;
 
       break;
-
     }
-
   }
 
   if (!booking) {
-
     console.log(
-      `ℹ️ No pending booking found for ${orderId}.`
+      `ℹ️ No pending booking found for Square order ${orderId}.`
     );
 
     return;
-
   }
 
   if (
     booking.status ===
     "paid"
   ) {
-
-    console.log(
-      "ℹ️ Booking already paid."
-    );
-
     return;
-
   }
 
   const available =
@@ -3662,27 +2519,18 @@ async function handleSquarePaymentUpdated(
     booking.quantity >
     available
   ) {
-
-    console.error(
-      "❌ Payment received but spaces are no longer available."
-    );
-
     await sendWhatsAppMessage(
-
       bookingPhone,
 
       "⚠️ *Payment received*\n\n" +
 
       "Your payment was successfully received, " +
-
       "but unfortunately the requested spaces are no longer available.\n\n" +
 
       "Please contact the organiser regarding your payment."
-
     );
 
     return;
-
   }
 
   booking.status =
@@ -3697,51 +2545,26 @@ async function handleSquarePaymentUpdated(
   booking.paidAt =
     new Date().toISOString();
 
-  bookings.set(
-    bookingPhone,
-    booking
-  );
-
   await saveBooking(
-    booking
-  );
-
-  await saveAttendees(
+    bookingPhone,
     booking
   );
 
   const firstAttendee =
-    booking.attendeeNames?.[0] ||
+    booking.attendeeNames[0] ||
     "Player";
-
-  const existingPlayer =
-    players.get(
-      bookingPhone
-    );
-
-  const player = {
-
-    name:
-      existingPlayer?.name ||
-      firstAttendee,
-
-    points:
-      existingPlayer?.points ||
-      0,
-
-    paid:
-      true
-
-  };
-
-  players.set(
-    bookingPhone,
-    player
-  );
 
   await saveCustomer(
     bookingPhone,
-    player
+    firstAttendee,
+    true
+  );
+
+  await saveAttendees(
+    booking.id,
+    bookingPhone,
+    booking.gender,
+    booking.attendeeNames
   );
 
   const names =
@@ -3753,16 +2576,14 @@ async function handleSquarePaymentUpdated(
       .join("\n");
 
   await sendWhatsAppMessage(
-
     bookingPhone,
 
     "✅ *Booking Confirmed!*\n\n" +
 
     "Your payment has been received and " +
-
     "your badminton spaces are confirmed.\n\n" +
 
-    `📅 ${badmintonSession.date}\n` +
+    `📅 ${badmintonSession.sessionDate}\n` +
 
     `🕖 ${badmintonSession.startTime} - ${badmintonSession.endTime}\n` +
 
@@ -3783,17 +2604,15 @@ async function handleSquarePaymentUpdated(
     `💷 Paid: *£${booking.amount}*\n\n` +
 
     "See you on court! 🏸"
-
   );
 
   console.log(
-    `✅ BOOKING CONFIRMED for ${bookingPhone}`
+    `✅ Booking confirmed for ${bookingPhone}`
   );
-
 }
 
 // ============================================================
-// SQUARE SIGNATURE
+// VERIFY SQUARE SIGNATURE
 // ============================================================
 
 function verifySquareWebhookSignature(
@@ -3802,14 +2621,12 @@ function verifySquareWebhookSignature(
   notificationUrl,
   signatureKey
 ) {
-
   try {
-
     const payload =
       notificationUrl +
       rawBody;
 
-    const expected =
+    const expectedSignature =
       crypto
         .createHmac(
           "sha256",
@@ -3823,7 +2640,7 @@ function verifySquareWebhookSignature(
 
     const expectedBuffer =
       Buffer.from(
-        expected
+        expectedSignature
       );
 
     const receivedBuffer =
@@ -3835,27 +2652,21 @@ function verifySquareWebhookSignature(
       expectedBuffer.length !==
       receivedBuffer.length
     ) {
-
       return false;
-
     }
 
     return crypto.timingSafeEqual(
       expectedBuffer,
       receivedBuffer
     );
-
   } catch (error) {
-
     console.error(
-      "❌ Signature verification error:",
+      "❌ Square signature verification error:",
       error
     );
 
     return false;
-
   }
-
 }
 
 // ============================================================
@@ -3863,22 +2674,16 @@ function verifySquareWebhookSignature(
 // ============================================================
 
 function getAvailabilityMessage() {
-
   const menSpaces =
-    getRemainingSpaces(
-      "men"
-    );
+    getRemainingSpaces("men");
 
   const womenSpaces =
-    getRemainingSpaces(
-      "women"
-    );
+    getRemainingSpaces("women");
 
   return (
-
     "🏸 *Check Availability*\n\n" +
 
-    `📅 ${badmintonSession.date}\n` +
+    `📅 ${badmintonSession.sessionDate}\n` +
 
     `🕖 ${badmintonSession.startTime} - ${badmintonSession.endTime}\n` +
 
@@ -3887,9 +2692,7 @@ function getAvailabilityMessage() {
     `👨 Men's spaces: *${menSpaces} available*\n` +
 
     `👩 Women's spaces: *${womenSpaces} available*`
-
   );
-
 }
 
 // ============================================================
@@ -3899,11 +2702,14 @@ function getAvailabilityMessage() {
 function getRemainingSpaces(
   gender
 ) {
-
   const capacity =
     gender === "men"
-      ? badmintonSession.menCapacity
-      : badmintonSession.womenCapacity;
+      ? Number(
+          badmintonSession.menCapacity
+        )
+      : Number(
+          badmintonSession.womenCapacity
+        );
 
   let booked = 0;
 
@@ -3911,26 +2717,21 @@ function getRemainingSpaces(
     const booking
     of bookings.values()
   ) {
-
     if (
       booking.status === "paid" &&
       booking.gender === gender
     ) {
-
       booked +=
         Number(
           booking.quantity
         ) || 0;
-
     }
-
   }
 
   return Math.max(
     0,
     capacity - booked
   );
-
 }
 
 // ============================================================
@@ -3940,29 +2741,19 @@ function getRemainingSpaces(
 function getMyBooking(
   phone
 ) {
-
   const booking =
     bookings.get(phone);
 
   if (!booking) {
-
     return (
-
       "🏸 *My Booking*\n\n" +
-
       "You don't currently have a booking.\n\n" +
-
       "Reply *1* to book a space."
-
     );
-
   }
 
   const names =
-    (
-      booking.attendeeNames ||
-      []
-    )
+    booking.attendeeNames
       .map(
         (name, index) =>
           `${index + 1}. ${name}`
@@ -3973,20 +2764,12 @@ function getMyBooking(
     booking.status ===
     "pending"
   ) {
-
     return (
-
       "⏳ *Booking Payment Pending*\n\n" +
 
-      `📅 ${badmintonSession.date}\n` +
+      `📅 ${badmintonSession.sessionDate}\n` +
 
-      `🕖 ${badmintonSession.startTime} - ${badmintonSession.endTime}\n` +
-
-      `📍 ${badmintonSession.venue}\n\n` +
-
-      `👥 Category: ${capitalize(
-        booking.gender
-      )}\n` +
+      `🕖 ${badmintonSession.startTime} - ${badmintonSession.endTime}\n\n` +
 
       `🎟️ Spaces: ${booking.quantity}\n\n` +
 
@@ -3996,21 +2779,16 @@ function getMyBooking(
 
       "\n\n" +
 
-      `💷 Amount due: *£${booking.amount}*\n\n` +
-
       "Your payment has not yet been confirmed."
-
     );
-
   }
 
   return (
-
     "🏸 *My Booking*\n\n" +
 
     "Status: *CONFIRMED* ✅\n\n" +
 
-    `📅 ${badmintonSession.date}\n` +
+    `📅 ${badmintonSession.sessionDate}\n` +
 
     `🕖 ${badmintonSession.startTime} - ${badmintonSession.endTime}\n` +
 
@@ -4029,9 +2807,7 @@ function getMyBooking(
     "\n\n" +
 
     `💷 Paid: *£${booking.amount}*`
-
   );
-
 }
 
 // ============================================================
@@ -4041,7 +2817,6 @@ function getMyBooking(
 function isValidFullName(
   text
 ) {
-
   const cleaned =
     text.trim();
 
@@ -4054,14 +2829,11 @@ function isValidFullName(
     words.length < 2 ||
     words.length > 6
   ) {
-
     return false;
-
   }
 
   return /^[a-zA-ZÀ-ÿ'’\- ]{2,100}$/
     .test(cleaned);
-
 }
 
 // ============================================================
@@ -4069,7 +2841,6 @@ function isValidFullName(
 // ============================================================
 
 function getRanking() {
-
   const ranked =
     [...players.values()]
       .sort(
@@ -4077,24 +2848,17 @@ function getRanking() {
           (b.points || 0) -
           (a.points || 0)
       )
-      .slice(
-        0,
-        10
-      );
+      .slice(0, 10);
 
   if (
-    !ranked.length
+    ranked.length === 0
   ) {
-
     return (
-      "🏆 No players have been added " +
-      "to the ranking yet."
+      "🏆 No players have been added to the ranking yet."
     );
-
   }
 
   return (
-
     "🏆 *Player Rankings*\n\n" +
 
     ranked
@@ -4105,9 +2869,7 @@ function getRanking() {
           } pts`
       )
       .join("\n")
-
   );
-
 }
 
 // ============================================================
@@ -4117,7 +2879,6 @@ function getRanking() {
 function capitalize(
   text
 ) {
-
   if (!text) {
     return "";
   }
@@ -4126,17 +2887,15 @@ function capitalize(
     text.charAt(0).toUpperCase() +
     text.slice(1)
   );
-
 }
 
 // ============================================================
-// HTML ESCAPING
+// ESCAPE HTML
 // ============================================================
 
 function escapeHtml(
   value
 ) {
-
   return String(
     value ?? ""
   )
@@ -4160,57 +2919,47 @@ function escapeHtml(
       /'/g,
       "&#039;"
     );
-
 }
 
 // ============================================================
-// WHATSAPP MESSAGE
+// SEND WHATSAPP MESSAGE
 // ============================================================
 
 async function sendWhatsAppMessage(
   to,
   message
 ) {
-
   if (
     !WHATSAPP_TOKEN ||
     !PHONE_NUMBER_ID
   ) {
-
     console.log(
-      "⚠️ WhatsApp credentials are not configured."
+      "⚠️ WhatsApp credentials not configured."
     );
 
     return;
-
   }
 
   const url =
     `https://graph.facebook.com/v23.0/${PHONE_NUMBER_ID}/messages`;
 
   try {
-
     const response =
       await fetch(
         url,
         {
-
-          method:
-            "POST",
+          method: "POST",
 
           headers: {
-
             Authorization:
               `Bearer ${WHATSAPP_TOKEN}`,
 
             "Content-Type":
               "application/json"
-
           },
 
           body:
             JSON.stringify({
-
               messaging_product:
                 "whatsapp",
 
@@ -4223,9 +2972,7 @@ async function sendWhatsAppMessage(
                 body:
                   message
               }
-
             })
-
         }
       );
 
@@ -4233,29 +2980,23 @@ async function sendWhatsAppMessage(
       await response.json();
 
     if (!response.ok) {
-
       console.error(
         "❌ WhatsApp API error:",
         data
       );
 
       return;
-
     }
 
     console.log(
       "✅ WhatsApp message sent"
     );
-
   } catch (error) {
-
     console.error(
       "❌ WhatsApp send error:",
       error
     );
-
   }
-
 }
 
 // ============================================================
@@ -4266,15 +3007,26 @@ app.listen(
   PORT,
   "0.0.0.0",
   async () => {
-
     console.log(
       `🏸 Badminton Bot running on port ${PORT}`
     );
 
-    await loadDatabase();
+    console.log(
+      "🔄 Loading Supabase data..."
+    );
+
+    await loadSession();
+
+    await loadCustomers();
+
+    await loadBookings();
 
     console.log(
-      `📅 Session: ${badmintonSession.date}`
+      "--------------------------------"
+    );
+
+    console.log(
+      `📅 Session: ${badmintonSession.sessionDate}`
     );
 
     console.log(
@@ -4294,7 +3046,7 @@ app.listen(
     );
 
     console.log(
-      `🎟️ Total: ${badmintonSession.totalCapacity}`
+      `💷 Price: £${badmintonSession.pricePerSpace}`
     );
 
     console.log(
@@ -4302,21 +3054,7 @@ app.listen(
     );
 
     console.log(
-      `🗄️ Supabase: ${
-        SUPABASE_URL
-          ? "configured"
-          : "NOT CONFIGURED"
-      }`
+      "--------------------------------"
     );
-
-    console.log(
-      `🔐 Admin: ${
-        ADMIN_PASSWORD
-          ? "configured"
-          : "NOT CONFIGURED"
-      }`
-
-    );
-
   }
 );
